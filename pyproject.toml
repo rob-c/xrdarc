@@ -26,8 +26,8 @@ classifiers = [
 # Credential discovery, TLS policy, VOMS and the report contract are shared
 # with the storage clients, which are released together.
 dependencies = [
-  "xgfalclient==0.4.0",
-  "xrdclient==0.4.0",
+  "xgfalclient>=0.3.2,<0.5",
+  "xrdclient>=0.3.2,<0.5",
   "cryptography>=45",
   "urllib3>=2.2",
 ]

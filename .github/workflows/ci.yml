@@ -12,7 +12,7 @@ concurrency:
 
 env:
   FORCE_COLOR: "1"
-  # The shared clients are released together with xrdarc; test the candidates.
+  # Test against the shared clients' development heads (xrdarc also works with 0.3.2 from PyPI).
   XRDCLIENT_REF: main
   XGFALCLIENT_REF: main
 
