@@ -21,6 +21,8 @@ _AMBIENT = (
     "X509_USER_PROXY", "X509_USER_CERT", "X509_USER_KEY", "X509_CERT_DIR", "X509_VOMS_DIR",
     "X509_VOMSES", "X509_VOMS_FILE", "BEARER_TOKEN", "BEARER_TOKEN_FILE", "XDG_RUNTIME_DIR",
     "TMPDIR", "ARC_LOCATION", "USERPROFILE",
+    # Python 3.14 colours argparse help when these say so (CI sets FORCE_COLOR).
+    "FORCE_COLOR", "PYTHON_COLORS",
 )  # fmt: skip
 
 #: A uid nobody has, so ``/tmp/x509up_u<uid>`` and ``/tmp/bt_u<uid>`` never exist.

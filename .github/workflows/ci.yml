@@ -19,6 +19,8 @@ env:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # xrdclient does not import on Windows yet (os.register_at_fork); see docs/platforms.md.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:

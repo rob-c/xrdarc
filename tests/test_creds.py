@@ -226,12 +226,15 @@ def test_none_presents_nothing(grid_env: PKI, monkeypatch: pytest.MonkeyPatch) -
 def test_token_file(home: Path, tmp_path: Path) -> None:
     token = tmp_path / "token"
     token.write_text("from-file\n")
+    token.chmod(0o600)  # newer xgfalclient refuses a token others can read
     found = discover(environ={"HOME": str(home), "BEARER_TOKEN_FILE": str(token)})
     assert found.token == "from-file"
 
 
 def test_token_in_runtime_dir(home: Path, tmp_path: Path) -> None:
-    (tmp_path / f"bt_u{UNUSED_UID}").write_text("runtime\n")
+    token = tmp_path / f"bt_u{UNUSED_UID}"
+    token.write_text("runtime\n")
+    token.chmod(0o600)
     found = discover(environ={"HOME": str(home), "XDG_RUNTIME_DIR": str(tmp_path)})
     assert found.token == "runtime"
 

@@ -36,7 +36,9 @@ $ pip install xrdarc
 
 Requires Python 3.11+. Runtime dependencies are `xrdclient`, `xgfalclient`,
 `cryptography` and `urllib3`, all of which install from wheels on Linux
-(glibc and musl), macOS and Windows.
+(glibc and musl) and macOS. Windows is not supported yet: xrdclient 0.3.2
+does not import there (see
+[docs/platforms.md](https://github.com/rob-c/xrdarc/blob/main/docs/platforms.md)).
 
 ## Commands
 
@@ -83,7 +85,7 @@ and xgfalclient), with one record per job and numeric error codes.
   adds them.
 
 Where xrdarc deliberately differs from ARC is listed in
-[docs/compatibility.md](docs/compatibility.md).
+[docs/compatibility.md](https://github.com/rob-c/xrdarc/blob/main/docs/compatibility.md).
 
 ## Status
 
@@ -98,7 +100,7 @@ Tested end to end against ARC 7 A-REX with a SLURM back end:
 
 The hermetic suite runs against an in-process fake A-REX (`xrdarc.testing.arex`)
 and holds the package at 100% line and branch coverage. See
-[docs/DEVELOPING.md](docs/DEVELOPING.md) for running the interop suite against
+[docs/DEVELOPING.md](https://github.com/rob-c/xrdarc/blob/main/docs/DEVELOPING.md) for running the interop suite against
 a CE of your own.
 
 ## Licence
