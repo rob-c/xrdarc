@@ -1,0 +1,16 @@
+.venv/
+.dependencies/
+__pycache__/
+*.pyc
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+site/
+*.egg-info/
+.complexipy_cache/

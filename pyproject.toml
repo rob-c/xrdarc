@@ -1,0 +1,117 @@
+[build-system]
+# Hatchling 1.32 emits Core Metadata 2.5, which Twine 6.2 cannot validate.
+# Keep isolated and CI builds reproducible until the inspection tool catches up.
+requires = ["hatchling>=1.27,<1.32"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xrdarc"
+dynamic = ["version"]
+description = "A pure Python 3 NorduGrid ARC client: submit, monitor, retrieve and manage jobs on ARC CEs over the REST interface"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "LGPL-3.0-or-later" }
+authors = [{ name = "Robert Currie", email = "robert.andrew.currie@gmail.com" }]
+keywords = ["arc", "nordugrid", "arex", "grid", "wlcg", "hep", "xrsl", "x509", "voms"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: System :: Distributed Computing",
+]
+# Credential discovery, TLS policy, VOMS and the report contract are shared
+# with the storage clients, which are released together.
+dependencies = [
+  "xgfalclient==0.4.0",
+  "xrdclient==0.4.0",
+  "cryptography>=45",
+  "urllib3>=2.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/rob-c/xrdarc"
+Repository = "https://github.com/rob-c/xrdarc"
+Issues = "https://github.com/rob-c/xrdarc/issues"
+Changelog = "https://github.com/rob-c/xrdarc/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1,<2",
+  "complexipy>=6,<7",
+  "mypy>=1.10",
+  "pytest>=8",
+  "pytest-cov",
+  "pytest-timeout",
+  "pytest-xdist",
+  "ruff>=0.5",
+  "twine>=6,<7",
+]
+docs = ["mkdocs>=1.6,<2", "mkdocs-material>=9.5,<10"]
+
+[project.scripts]
+xrdarc = "xrdarc.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xrdarc"]
+
+[tool.hatch.version]
+path = "src/xrdarc/_version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+timeout = 120
+addopts = "-ra"
+filterwarnings = ["error::ResourceWarning"]
+markers = [
+  "interop: needs a real ARC CE; skipped unless XRDARC_INTEROP=1 (see docs/DEVELOPING.md)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["xrdarc"]
+parallel = true
+concurrency = ["thread"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "@overload",
+  "\\.\\.\\.$",
+  "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W", "I", "B", "UP", "SIM", "RUF",
+  # High-confidence security checks, as in the storage clients.
+  "S102", "S307", "S506", "S602", "S608", "S609", "S701",
+]
+ignore = ["RUF012", "SIM105", "RUF022"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/xrdarc"]
+
+[[tool.mypy.overrides]]
+module = ["xgfalclient.*", "xrdclient.*"]
+# Both ship py.typed; listed so a stale editable install says so plainly.
+follow_imports = "normal"
+
+[tool.complexipy]
+paths = ["src", "tests"]
+max-complexity-allowed = 15
+failed = true

@@ -1,0 +1,48 @@
+site_name: xrdarc
+site_description: A pure Python 3 NorduGrid ARC client
+repo_url: https://github.com/rob-c/xrdarc
+copyright: LGPL-3.0-or-later
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+
+nav:
+  - Home: index.md
+  - Differences from ARC: compatibility.md
+  - Platforms: platforms.md
+  - Security: security.md
+  - Developing: DEVELOPING.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+watch:
+  - src/xrdarc
