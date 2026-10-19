@@ -263,9 +263,9 @@ What moved where (xrdarc keeps only what is ARC's):
 - `.github/workflows/release.yml`: a `v*` tag builds the sdist and wheel,
   runs `twine check --strict` and xrdclient's `chain_preflight.py pypi`, so
   xrdcore, xrdsec and xrdhttp must already be on PyPI. It then installs the wheel
-  from PyPI alone, runs the suite against it, and attaches both files to a
-  GitHub release. There is no PyPI upload yet; the workflow says how to
-  enable one (docs/DEVELOPING.md, *Releasing*).
+  from PyPI alone, runs the suite against it, attaches both files to a
+  GitHub release and uploads them to PyPI with trusted publishing
+  (docs/DEVELOPING.md, *Releasing*).
 
 ## [0.1.0] - Unreleased
 

@@ -153,7 +153,7 @@ $ xrdarc stat --json JOB          # everything, machine-readable
 
 ## Releasing
 
-xrdarc is released on GitHub only, after xrdcore, xrdsec and xrdhttp are on PyPI (step
+xrdarc is released on GitHub and PyPI, after xrdcore, xrdsec and xrdhttp are on PyPI (step
 5 of xrdclient's `docs/releasing.md`, *Releasing the 0.4.0 chain*). Date the
 version's `CHANGELOG.md` heading, wait for CI, then push an annotated
 `v<version>` tag. `.github/workflows/release.yml` builds with xrd-devtools'
@@ -163,5 +163,6 @@ xrd-devtools' `chain_preflight.py pypi` on the wheel, so xrdcore, xrdsec and xrd
 their lower bounds must be on PyPI as wheels. It installs the wheel from PyPI alone and checks the tag,
 version and changelog, then runs this suite against the installed wheel.
 Last, it creates the GitHub release with both files attached and the
-changelog section as its notes. Nothing goes to PyPI; the workflow's last
-comment says how to turn that on.
+changelog section as its notes, and uploads the same files to PyPI with
+trusted publishing (owner `rob-c`, repository `xrdarc`, workflow
+`release.yml`, environment `pypi`).

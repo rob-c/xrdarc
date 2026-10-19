@@ -1,6 +1,7 @@
 # Builds the sdist and wheel on a version tag, checks them against what is on
-# PyPI, and attaches them to a GitHub release. xrdarc is released on GitHub
-# only: nothing is uploaded to PyPI (see the note at the end to enable that).
+# PyPI, attaches them to a GitHub release and uploads the same files to PyPI
+# with trusted publishing (owner rob-c, repository xrdarc, workflow
+# release.yml, environment pypi).
 #
 # xrdarc is built on xrdcore, xrdsec and xrdhttp, which must already be on PyPI: the
 # pre-flight refuses to release otherwise, and the release wheel is then
@@ -62,21 +63,18 @@ jobs:
           gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" \
             --verify-tag --title "xrdarc $version" --notes-file "$RUNNER_TEMP/notes.md"
 
-  # PyPI is not enabled. To publish there too: add a pending trusted publisher
-  # on PyPI (owner rob-c, repository xrdarc, workflow release.yml, environment
-  # pypi), create the "pypi" environment in this repository (Settings,
-  # Environments, restricted to v* tags), then uncomment this job. It uploads
-  # the same artifact the GitHub release carries.
-  #
-  # publish:
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   environment: pypi
-  #   permissions:
-  #     id-token: write
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: dist
-  #         path: dist/
-  #     - uses: pypa/gh-action-pypi-publish@release/v1
+  # The upload stays in this job, not the shared action: PyPI's trusted
+  # publishing only accepts a token minted for the calling workflow's own job.
+  # It uploads the same artifact the GitHub release carries.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
