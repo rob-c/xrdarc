@@ -1,70 +1,96 @@
 name: CI
 
+# Every gate is one of xrd-devtools' reusable workflows (rob-c/xrd-devtools,
+# .github/workflows), reading its configuration from this repository's
+# pyproject.toml. The libraries xrdarc is built on are checked out at their
+# development heads until 0.4.0 is on PyPI; xrdarc depends on no storage
+# client.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      xrdcore-ref:
+        description: rob-c/xrdcore candidate ref
+        default: main
+      xrdsec-ref:
+        description: rob-c/xrdsec candidate ref
+        default: main
+      xrdhttp-ref:
+        description: rob-c/xrdhttp candidate ref
+        default: main
+      devtools-ref:
+        description: rob-c/xrd-devtools ref whose gates and tools run
+        default: main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   FORCE_COLOR: "1"
-  # Test against the shared clients' development heads (xrdarc also works with 0.3.2 from PyPI).
-  XRDCLIENT_REF: main
-  XGFALCLIENT_REF: main
+  XRDCORE_REF: ${{ inputs.xrdcore-ref || 'main' }}
+  XRDSEC_REF: ${{ inputs.xrdsec-ref || 'main' }}
+  XRDHTTP_REF: ${{ inputs.xrdhttp-ref || 'main' }}
+  DEVTOOLS_REF: ${{ inputs.devtools-ref || 'main' }}
 
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    # xrdclient does not import on Windows yet (os.register_at_fork); see docs/platforms.md.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.14"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: rob-c/xrdclient
-          ref: ${{ env.XRDCLIENT_REF }}
-          path: .dependencies/xrdclient
-      - uses: actions/checkout@v4
-        with:
-          repository: rob-c/xgfalclient
-          ref: ${{ env.XGFALCLIENT_REF }}
-          path: .dependencies/xgfalclient
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -e .dependencies/xrdclient -e .dependencies/xgfalclient -e ".[dev]"
-      - run: python -m pytest -n auto --cov --cov-report=term-missing
+  # ruff, mypy --strict, complexipy, the take-over scorecard and the
+  # configuration conformance check.
+  static:
+    uses: rob-c/xrd-devtools/.github/workflows/static.yml@main
+    with:
+      packages: xrdcore xrdsec xrdhttp
+      xrdcore-ref: ${{ inputs.xrdcore-ref || 'main' }}
+      xrdsec-ref: ${{ inputs.xrdsec-ref || 'main' }}
+      xrdhttp-ref: ${{ inputs.xrdhttp-ref || 'main' }}
+      devtools-ref: ${{ inputs.devtools-ref || 'main' }}
 
-  lint:
+  # The suite at 100 % line and branch on Linux and macOS.
+  test:
+    uses: rob-c/xrd-devtools/.github/workflows/tests.yml@main
+    with:
+      packages: xrdcore xrdsec xrdhttp
+      xrdcore-ref: ${{ inputs.xrdcore-ref || 'main' }}
+      xrdsec-ref: ${{ inputs.xrdsec-ref || 'main' }}
+      xrdhttp-ref: ${{ inputs.xrdhttp-ref || 'main' }}
+      devtools-ref: ${{ inputs.devtools-ref || 'main' }}
+      python-versions: '["3.11", "3.14"]'
+      pytest-args: --timeout=300 --cov --cov-report=term-missing
+
+  # No function duplicated across the chain; every repository's configuration
+  # is the standard. This commit stands in for xrdarc's main.
+  chain:
+    uses: rob-c/xrd-devtools/.github/workflows/chain.yml@main
+    with:
+      xrdarc-ref: ${{ github.sha }}
+      devtools-ref: ${{ inputs.devtools-ref || 'main' }}
+
+  # The storage clients are not needed, so they must not be importable; the
+  # distributions build and pass twine; the documentation builds cleanly.
+  package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
         with:
-          repository: rob-c/xrdclient
-          ref: ${{ env.XRDCLIENT_REF }}
-          path: .dependencies/xrdclient
-      - uses: actions/checkout@v4
-        with:
-          repository: rob-c/xgfalclient
-          ref: ${{ env.XGFALCLIENT_REF }}
-          path: .dependencies/xgfalclient
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e .dependencies/xrdclient -e .dependencies/xgfalclient -e ".[dev,docs]"
-      - run: ruff check src tests
-      - run: ruff format --check src tests
-      - run: mypy
-      - run: complexipy --quiet
+      - uses: rob-c/xrd-devtools/.github/actions/candidates@main
+        with:
+          packages: xrdcore xrdsec xrdhttp
+          xrdcore-ref: ${{ env.XRDCORE_REF }}
+          xrdsec-ref: ${{ env.XRDSEC_REF }}
+          xrdhttp-ref: ${{ env.XRDHTTP_REF }}
+          devtools-ref: ${{ env.DEVTOOLS_REF }}
+          install: editable
+      - run: pip install -e ".[dev,docs]"
+      # Prove the boundary: neither storage client may be importable, or needed.
+      - run: python -c "import importlib.util as u; assert not (u.find_spec('xrdclient') or u.find_spec('xgfalclient'))"
       - run: python -m build && twine check --strict dist/*
       - run: mkdocs build --strict

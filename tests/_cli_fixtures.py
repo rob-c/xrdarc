@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from xgfalclient.testing.pki import PKI
+from xrdsec.testing.pki import PKI
 
 from _client_helpers import run, run_json
 from xrdarc.joblist import Job, JobList

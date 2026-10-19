@@ -55,7 +55,9 @@ def _arc_escape(value: str) -> str:
 
 def _arc_write(path: Path, *rows: dict[str, str]) -> None:
     """Rows as ARC's C++ client writes them: every column, every value escaped."""
-    insert = f"INSERT INTO jobs({ARC_JOBS_COLUMNS}) VALUES ({', '.join('?' * len(COLUMNS))})"  # noqa: S608
+    insert = joblist._sql(
+        "INSERT INTO jobs({columns}) VALUES ({values})", columns=COLUMNS, values=len(COLUMNS)
+    )
     connection = sqlite3.connect(path)
     try:
         with connection:
@@ -71,7 +73,9 @@ def _raw(path: Path) -> list[dict[str, str]]:
     """Every row exactly as stored (still escaped)."""
     connection = sqlite3.connect(path)
     try:
-        cursor = connection.execute(f"SELECT {ARC_JOBS_COLUMNS} FROM jobs ORDER BY rowid")  # noqa: S608
+        cursor = connection.execute(
+            joblist._sql("SELECT {columns} FROM jobs ORDER BY rowid", columns=COLUMNS)
+        )
         return [dict(zip(COLUMNS, row, strict=True)) for row in cursor]
     finally:
         connection.close()
@@ -150,7 +154,7 @@ def path(tmp_path: Path) -> Path:
 def utc_plus_two() -> Iterator[None]:
     """A local time zone two hours east of UTC, as on a European submit host in summer."""
     if not hasattr(time, "tzset"):
-        pytest.skip("needs time.tzset")
+        pytest.skip("platform without time.tzset (Windows)")
     old = os.environ.get("TZ")
     os.environ["TZ"] = "XRD-2"
     time.tzset()
@@ -168,36 +172,36 @@ def _job(**fields: object) -> Job:
     return Job.from_url(URL, submitted=dt.datetime(2026, 10, 17, 10, tzinfo=UTC), **fields)
 
 
-FULL = dict(
-    name="it's #1\r\n100%",
-    description="&(executable='run.sh')\0\b",
-    delegations=("deleg-1", "deleg-2"),
-    state=JobState.FINISHED,
-    rest_state="FINISHED",
-    exit_code=0,
-    errors=("first", "second"),
-    queue="grid",
-    owner="/DC=org/CN=someone",
-    stdin="in",
-    stdout="out",
-    stderr="err",
-    log_dir="gmlog",
-    execution_nodes=("wn1", "wn2"),
-    waiting_position=3,
-    submitted_on_ce=dt.datetime(2026, 10, 17, 10, 0, 1, tzinfo=UTC),
-    started=dt.datetime(2026, 10, 17, 10, 1, tzinfo=UTC),
-    ended=dt.datetime(2026, 10, 17, 10, 2, tzinfo=UTC),
-    erase_time=dt.datetime(2026, 10, 24, 10, 2, tzinfo=UTC),
-    proxy_expiry=dt.datetime(2026, 10, 18, tzinfo=UTC),
-    used_wall_time=60,
-    used_cpu_time=55,
-    used_memory=2048,
-    requested_slots=1,
-    requested_wall_time=5400,
-    local_id="12345",
-    restart_state="SUBMITTING",
-    other_messages=("one", "two"),
-)
+FULL = {
+    "name": "it's #1\r\n100%",
+    "description": "&(executable='run.sh')\0\b",
+    "delegations": ("deleg-1", "deleg-2"),
+    "state": JobState.FINISHED,
+    "rest_state": "FINISHED",
+    "exit_code": 0,
+    "errors": ("first", "second"),
+    "queue": "grid",
+    "owner": "/DC=org/CN=someone",
+    "stdin": "in",
+    "stdout": "out",
+    "stderr": "err",
+    "log_dir": "gmlog",
+    "execution_nodes": ("wn1", "wn2"),
+    "waiting_position": 3,
+    "submitted_on_ce": dt.datetime(2026, 10, 17, 10, 0, 1, tzinfo=UTC),
+    "started": dt.datetime(2026, 10, 17, 10, 1, tzinfo=UTC),
+    "ended": dt.datetime(2026, 10, 17, 10, 2, tzinfo=UTC),
+    "erase_time": dt.datetime(2026, 10, 24, 10, 2, tzinfo=UTC),
+    "proxy_expiry": dt.datetime(2026, 10, 18, tzinfo=UTC),
+    "used_wall_time": 60,
+    "used_cpu_time": 55,
+    "used_memory": 2048,
+    "requested_slots": 1,
+    "requested_wall_time": 5400,
+    "local_id": "12345",
+    "restart_state": "SUBMITTING",
+    "other_messages": ("one", "two"),
+}
 
 
 # -- escaping -------------------------------------------------------------------
@@ -589,7 +593,9 @@ def test_list_is_a_directory(path: Path) -> None:
     assert str(caught.value) == f"Cannot open the job list {path}: Is a directory"
 
 
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads anything")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="running as root, which can read any file"
+)
 def test_unreadable_list(path: Path) -> None:
     JobList(path).write([_job()])
     path.chmod(0)
@@ -649,6 +655,12 @@ def test_extra_does_not_affect_equality() -> None:
     assert _job(extra={"a": "b"}) == _job()
 
 
+@pytest.mark.parametrize("name", ["id; DROP TABLE jobs", "Id", "a b", ""])
+def test_sql_text_takes_only_plain_column_names(name: str) -> None:
+    with pytest.raises(ValueError, match="not a plain SQL column name"):
+        joblist._sql("SELECT {columns} FROM jobs", columns=("id", name))
+
+
 def test_an_old_format_job_list_is_migrated_as_arc_does(tmp_path: Path) -> None:
     path = tmp_path / "jobs.dat"
     old_columns = joblist._COLUMNS[:16]
@@ -663,7 +675,7 @@ def test_an_old_format_job_list_is_migrated_as_arc_does(tmp_path: Path) -> None:
             delegationid="d1",
         )
         raw.execute(
-            f"INSERT INTO jobs VALUES ({', '.join('?' for _ in old_columns)})",  # noqa: S608
+            joblist._sql("INSERT INTO jobs VALUES ({values})", values=len(old_columns)),
             [values[c] for c in old_columns],
         )
     raw.close()

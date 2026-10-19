@@ -4,34 +4,35 @@ Load it from a test module with::
 
     pytest_plugins = ["_arex"]
 
-and ask for the fixtures by name:
+and ask for the fixtures by name. ``ce``, ``make_ce``, ``credentials`` and
+``make_arc`` come from :mod:`xrdarc.testing.fixtures` (the conftest loads it
+for every module; xrdwms's suite uses the same); this module adds:
 
-* ``ce`` - a started :class:`~xrdarc.testing.arex.FakeARex` over TLS (the
-  session PKI's host certificate), stopped after the test;
-* ``make_ce(**kwargs)`` - another fake CE, with any ``FakeARex`` keyword
-  (``versions=``, ``legacy_json=``, ``tokens=``, ``progression=`` ...);
-* ``credentials`` - :class:`~xrdarc.creds.Credentials` for the PKI's proxy
-  and CA directory (the fake sees the identity :data:`USER_DN`);
 * ``sleeps`` - the list every backoff pause of ``session`` is recorded in
-  (nothing really sleeps);
+  (nothing really sleeps); while it is in use the backoff's jitter is pinned
+  to the top of its window (:class:`Ceiling`), so the pauses are exact;
 * ``session`` - a :class:`~xrdarc.transport.Session` with those credentials,
   ``retries=RETRIES`` and ``sleeps.append`` as its sleep, closed afterwards;
 * ``rest`` - a :class:`~xrdarc.rest.RESTClient` for ``ce`` on ``session``.
 
-The plain helpers (:func:`make_credentials`, :func:`make_session`,
-:func:`add_job`) serve tests that need a variation of these. The module has
+(A module that wants ``make_arc``'s clients to record their pauses in
+``sleeps`` overrides ``arc_session_factory`` itself: this module is loaded
+as a plugin, so a fixture here would apply to every module of the run.)
+
+The plain helpers (:func:`make_session`, :func:`add_job`) serve tests that
+need a variation of these; ``make_credentials`` is
+:func:`xrdarc.testing.fixtures.make_credentials`. The module has
 no assertions of its own (PYTEST_DONT_REWRITE), so importing names from it
 as well as loading it as a plugin is fine.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from pathlib import Path
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from xgfalclient.testing.pki import PKI
+from xrdcore import retry
 
 from xrdarc.creds import Credentials
 from xrdarc.rest import RESTClient
@@ -41,11 +42,8 @@ from xrdarc.transport import Session
 __all__ = [
     "RETRIES",
     "USER_DN",
+    "Ceiling",
     "add_job",
-    "ce",
-    "credentials",
-    "make_ce",
-    "make_credentials",
     "make_session",
     "rest",
     "session",
@@ -53,20 +51,17 @@ __all__ = [
 ]
 
 #: The identity the fake CE sees for the PKI's proxy.
-USER_DN = "/DC=org/DC=xgfal/OU=People/CN=Test User"
+USER_DN = "/DC=org/DC=xrdsec/OU=People/CN=Test User"
 #: Retries of the ``session`` fixture: three attempts in all.
 RETRIES = 2
 
 
-def make_credentials(pki: PKI, **overrides: Any) -> Credentials:
-    """The PKI's proxy as the X.509 credential, its CA directory as trust anchors."""
-    fields: dict[str, Any] = {
-        "cert": str(pki.proxy_path),
-        "key": str(pki.proxy_path),
-        "ca_dir": str(pki.ca_dir),
-    }
-    fields.update(overrides)
-    return Credentials(**fields)
+class Ceiling:
+    """A jitter source that always answers the top of the window, so waits are exact."""
+
+    def uniform(self, a: float, b: float) -> float:
+        """``b``: the longest wait :func:`xrdcore.retry.delay` allows."""
+        return b
 
 
 def make_session(
@@ -87,33 +82,11 @@ def add_job(ce: FakeARex, **kwargs: Any) -> FakeJob:
 
 
 @pytest.fixture
-def make_ce(tmp_path: Path, pki: PKI) -> Iterator[Callable[..., FakeARex]]:
-    started: list[FakeARex] = []
-
-    def factory(**kwargs: Any) -> FakeARex:
-        kwargs.setdefault("tls", pki.server_context())
-        fake = FakeARex(tmp_path / f"ce{len(started)}", **kwargs).start()
-        started.append(fake)
-        return fake
-
-    yield factory
-    for fake in started:
-        fake.stop()
-
-
-@pytest.fixture
-def ce(make_ce: Callable[..., FakeARex]) -> FakeARex:
-    return make_ce()
-
-
-@pytest.fixture
-def credentials(pki: PKI) -> Credentials:
-    return make_credentials(pki)
-
-
-@pytest.fixture
-def sleeps() -> list[float]:
-    return []
+def sleeps() -> Iterator[list[float]]:
+    """The pauses a session made, with the backoff's jitter pinned to its ceiling."""
+    previous = retry.use_rng(Ceiling())
+    yield []
+    retry.use_rng(previous)
 
 
 @pytest.fixture

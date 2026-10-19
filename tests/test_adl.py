@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 import pytest
+from xrdcore import safexml
 
 from xrdarc.adl import ADL_NS, NORDUGRID_NS, is_adl, prepare_adl
 from xrdarc.errors import DescriptionError
@@ -107,7 +107,7 @@ def test_file_source_is_uploaded_and_removed(tmp_path: Path) -> None:
     uri = f"file://{tmp_path.as_posix().replace(' ', '%20')}/my%20input.dat"
     job = prepare_adl(_staging(_input("in.dat", _source(uri))), base=tmp_path / "elsewhere")
     assert job.uploads == (Upload("in.dat", local.resolve(), False),)
-    root = ET.fromstring(job.description)
+    root = safexml.fromstring(job.description)
     (item,) = root.iter(f"{A}InputFile")
     assert item.find(f"{A}Source") is None
     assert item.findtext(f"{A}Name") == "in.dat"
@@ -142,7 +142,7 @@ def test_source_without_uri_is_a_client_upload(tmp_path: Path) -> None:
     (tmp_path / "in").write_text("x")
     job = prepare_adl(_staging(_input("in", "<Source/>")), base=tmp_path)
     assert job.uploads == (Upload("in", (tmp_path / "in").resolve(), False),)
-    assert ET.fromstring(job.description).find(f".//{A}Source") is None
+    assert safexml.fromstring(job.description).find(f".//{A}Source") is None
 
 
 @pytest.mark.parametrize(
@@ -187,14 +187,14 @@ def test_bad_input_names(tmp_path: Path, item: str, shown: str) -> None:
 
 
 def _delegation(description: str) -> list[str | None]:
-    root = ET.fromstring(description)
+    root = safexml.fromstring(description)
     return [d.text for d in root.iter(f"{N}DelegationID")]
 
 
 def test_delegation_embedded_without_data_staging(tmp_path: Path) -> None:
     job = prepare_adl(_adl(""), base=tmp_path, delegation_id="deleg-1", embed_delegation=True)
     assert _delegation(job.description) == ["deleg-1"]
-    staging = ET.fromstring(job.description).find(f"{A}DataStaging")
+    staging = safexml.fromstring(job.description).find(f"{A}DataStaging")
     assert staging is not None
     assert staging.find(f"{N}DelegationID") is not None
 
@@ -202,7 +202,7 @@ def test_delegation_embedded_without_data_staging(tmp_path: Path) -> None:
 def test_delegation_embedded_into_existing_data_staging(tmp_path: Path) -> None:
     text = _staging("<OutputFile><Name>o</Name></OutputFile>")
     job = prepare_adl(text, base=tmp_path, delegation_id="deleg-2", embed_delegation=True)
-    root = ET.fromstring(job.description)
+    root = safexml.fromstring(job.description)
     assert len(root.findall(f"{A}DataStaging")) == 1
     assert _delegation(job.description) == ["deleg-2"]
 

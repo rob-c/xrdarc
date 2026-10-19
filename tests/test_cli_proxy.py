@@ -2,27 +2,25 @@
 
 from __future__ import annotations
 
-import errno
-import os
+import getpass
 import shutil
+import ssl
 import sys
-import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
-from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-from xgfalclient.testing.pki import PKI
+from xrdsec import proxies
+from xrdsec.testing.pki import PKI
+from xrdsec.testing.voms import FakeVOMSServer, vomses_line, write_lsc
 
 from _client_helpers import results, run, run_json
-from _voms_fixtures import make_ac
-from xrdarc import voms
-from xrdarc.cli import _common
-from xrdarc.proxy import Signer, create_proxy, proxy_info, write_proxy
-from xrdarc.transport import Session
+from conftest import PROXY_NAME
+from xrdarc.proxy import load_signer, proxy_info, write_proxy
 
 pytest_plugins = ["_cli_fixtures"]
 pytestmark = pytest.mark.usefixtures("restore_logging")
@@ -54,11 +52,11 @@ def test_create_from_cert_and_key(proxy: Proxy, pki: PKI, target: Path) -> None:
     code, out, err = proxy(*_user(pki), "--bits", "1024")
     assert (code, err) == (0, "")
     assert out.startswith("Proxy generation succeeded\nYour proxy is valid until: ")
-    assert "Proxy type: RFC 3820 compliant impersonation proxy\n" in out
+    assert "Proxy type: RFC3820 compliant impersonation proxy\n" in out
     assert "Proxy key length: 1024\n" in out
     assert "Time left for proxy: 11 hours 59 minutes" in out
     info = proxy_info(target)
-    assert info.identity == "/DC=org/DC=xgfal/OU=People/CN=Test User"
+    assert info.identity == load_signer(pki.user_cert_path, pki.user_key_path).identity
     assert oct(target.stat().st_mode & 0o777) == "0o600"
 
 
@@ -70,7 +68,7 @@ def test_create_limited_for_days(
     code, doc = run_json(capsys, *argv)
     assert code == 0
     [record] = results(doc)
-    assert record["proxy_type"] == "RFC 3820 compliant limited proxy"
+    assert record["proxy_type"] == "RFC3820 compliant limited proxy"
     assert record["path"] == str(out_path)
     assert 2 * 86400 - 60 < record["time_left"] <= 2 * 86400
     assert record["voms"] == []
@@ -108,14 +106,14 @@ def test_no_user_credential(proxy: Proxy, home: Path) -> None:
     (home / ".arc").mkdir()
     (home / ".arc" / "usercert.pem").write_text("only a certificate")
     code, out, err = proxy()
-    assert (code, out) == (errno.ENOENT, "")
-    assert "No user certificate found" in err
+    assert (code, out) == (3, "")
+    assert "no user certificate found" in err
 
 
 @pytest.mark.parametrize("lifetime", ["0", "bogus"])
 def test_bad_lifetime(proxy: Proxy, pki: PKI, lifetime: str) -> None:
     code, _, err = proxy(*_user(pki), "--lifetime", lifetime)
-    assert code == errno.EINVAL
+    assert code == 2
     assert err.startswith("xrdarc proxy: ")
 
 
@@ -131,8 +129,10 @@ def test_info_of_an_expired_proxy(
     capsys: pytest.CaptureFixture[str], pki: PKI, tmp_path: Path, restore_logging: None
 ) -> None:
     old = tmp_path / "old"
-    signer = Signer.load(pki.user_cert_path, pki.user_key_path)
-    write_proxy(old, create_proxy(signer, lifetime=60, now=time.time() - 120))
+    signer = load_signer(pki.user_cert_path, pki.user_key_path)
+    write_proxy(
+        old, proxies.create_proxy(signer, lifetime=60, now=time.time() - 120, profile="arc")
+    )
     code, doc = run_json(capsys, "proxy", "-I", "--proxy", str(old))
     assert code == 0
     assert results(doc)[0]["time_left"] == 0
@@ -143,8 +143,8 @@ def test_info_of_an_expired_proxy(
 
 def test_info_without_a_proxy(proxy: Proxy) -> None:
     code, _, err = proxy("-I")
-    assert code == errno.ENOENT
-    assert "There is no proxy at" in err
+    assert code == 3
+    assert "there is no proxy at" in err
 
 
 def test_remove(proxy: Proxy, target: Path) -> None:
@@ -155,12 +155,35 @@ def test_remove(proxy: Proxy, target: Path) -> None:
 
 
 def test_default_target_without_x509_user_proxy(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, restore_logging: None
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    restore_logging: None,
+    tmp_dir: Path,
 ) -> None:
     monkeypatch.delenv("X509_USER_PROXY", raising=False)
     code, _, err = run(capsys, "proxy", "-I")
-    assert code == errno.ENOENT
-    assert "There is no proxy at /tmp/x509up_u7654321" in err
+    assert code == 3
+    assert f"there is no proxy at {tmp_dir / PROXY_NAME}" in err
+
+
+def test_default_target_is_written_without_following_a_link(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    pki: PKI,
+    restore_logging: None,
+    tmp_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """A link at the predictable ``/tmp/x509up_u<uid>`` is a trap; at a named path it is not."""
+    monkeypatch.delenv("X509_USER_PROXY", raising=False)
+    default = tmp_dir / PROXY_NAME
+    elsewhere = tmp_path / "elsewhere"
+    default.symlink_to(elsewhere)
+    code, _, err = run(capsys, "proxy", *_user(pki), "--bits", "1024")
+    assert code == 3 and "symbolic link" in err and not elsewhere.exists()
+    monkeypatch.setenv("X509_USER_PROXY", str(default))
+    code, _, _ = run(capsys, "proxy", *_user(pki), "--bits", "1024")
+    assert code == 0 and elsewhere.is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +210,12 @@ def test_encrypted_key_asks_for_the_pass_phrase(
 ) -> None:
     prompts: list[str] = []
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(_common.getpass, "getpass", lambda p: prompts.append(p) or "secret")
+
+    def ask(prompt: str) -> str:
+        prompts.append(prompt)
+        return "secret"
+
+    monkeypatch.setattr(getpass, "getpass", ask)
     key = _encrypted_key(pki, tmp_path)
     code, _, err = proxy("--cert", str(pki.user_cert_path), "--key", str(key))
     assert (code, err) == (0, "")
@@ -200,7 +228,7 @@ def test_encrypted_key_without_a_terminal(
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     key = _encrypted_key(pki, tmp_path)
     code, _, err = proxy("--cert", str(pki.user_cert_path), "--key", str(key))
-    assert code == errno.EACCES
+    assert code == 3
     assert "no terminal to ask for its pass phrase" in err
 
 
@@ -209,66 +237,120 @@ def test_encrypted_key_without_a_terminal(
 # ---------------------------------------------------------------------------
 
 
-def _fake_fetch(pki: PKI, calls: list[dict[str, Any]]) -> Callable[..., bytes]:
-    holder = x509.load_pem_x509_certificate(pki.user_cert_path.read_bytes())
-    voms_cert = x509.load_pem_x509_certificate(pki.host_cert_path.read_bytes())
-    voms_key = serialization.load_pem_private_key(pki.host_key_path.read_bytes(), None)
+@dataclass
+class VOMS:
+    """A running fake VOMS server and the ``vomses`` file that names it."""
 
-    def fetch(
-        session: Session,
-        servers: Sequence[voms.VOMSServer],
-        *,
-        fqans: Sequence[str] = (),
-        lifetime: int | None = None,
-    ) -> bytes:
-        calls.append({"servers": [s.alias for s in servers], "fqans": fqans, "lifetime": lifetime})
-        assert session.credentials.is_proxy
-        assert os.path.isfile(str(session.credentials.cert))
-        return make_ac(holder, voms_cert, voms_key, fqans=tuple(fqans) or ("/atlas",))
-
-    return fetch
+    server: FakeVOMSServer
+    vomses: Path
 
 
-def _vomses(tmp_path: Path) -> Path:
-    path = tmp_path / "vomses"
-    path.write_text('"atlas" "voms.example" "15000" "/CN=voms.example" "atlas"\n')
-    return path
+@pytest.fixture
+def voms(pki: PKI, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[VOMS]:
+    """A VOMS server for ``atlas`` on loopback, trusted as a real one would be.
+
+    The server's host certificate is the PKI's, so ``X509_CERT_DIR`` trusts
+    it, and an LSC file in ``X509_VOMS_DIR`` lets the AC it mints verify.
+    """
+    server = FakeVOMSServer(pki.host_signer, pki.server_context(require_client=True))
+    server.holder = pki.user  # the user certificate, whatever the peer chain shows
+    vomsdir = tmp_path / "vomsdir"
+    write_lsc(vomsdir, "atlas", "localhost", pki.host_signer.chain)
+    monkeypatch.setenv("X509_CERT_DIR", str(pki.ca_dir))
+    monkeypatch.setenv("X509_VOMS_DIR", str(vomsdir))
+    vomses = tmp_path / "vomses"
+    with server:
+        vomses.write_text(vomses_line("atlas", "127.0.0.1", server.port, "/CN=voms"))
+        yield VOMS(server, vomses)
 
 
-def test_voms_attributes(
-    proxy: Proxy, pki: PKI, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(voms, "fetch_ac", _fake_fetch(pki, calls))
+def test_voms_attributes(proxy: Proxy, pki: PKI, voms: VOMS) -> None:
     argv = ["-S", "atlas:/atlas/Role=pilot", "-S", "atlas", "--voms-lifetime", "1h"]
-    code, out, err = proxy(*_user(pki), *argv, "--vomses", str(_vomses(tmp_path)))
+    code, out, err = proxy(*_user(pki), *argv, "--vomses", str(voms.vomses))
     assert (code, err) == (0, "")
     assert out.startswith("Contacting VOMS server for atlas\nContacting VOMS server for atlas\n")
-    assert calls == [
-        {"servers": ["atlas"], "fqans": ["/atlas/Role=pilot"], "lifetime": 3600},
-        {"servers": ["atlas"], "fqans": [], "lifetime": 3600},
-    ]
     assert "====== AC extension information for VO atlas ======" in out
     assert "attribute : /atlas/Role=pilot\n" in out
-    assert "uri       : voms.example:15000" in out
-    assert not list(Path(tempfile.gettempdir()).glob("xrdarc-proxy-*"))
+    assert "uri       : 127.0.0.1:" in out
+    assert "Time left for AC: 0 hours 59 minutes" in out
+    asked = [r.target for r in voms.server.requests]
+    assert asked[0].startswith("/generate-ac?fqans=%2Fatlas%2FRole%3Dpilot&lifetime=3600")
+    assert asked[1] == "/generate-ac?lifetime=3600"
+
+
+def test_voms_servers_are_reached_without_rfc5280_strict_mode(
+    proxy: Proxy, pki: PKI, voms: VOMS, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As a CE is: ``arcproxy`` (OpenSSL's defaults) never applies Python 3.13's strict checks."""
+    from xrdsec import tls
+
+    strict: list[bool] = []
+    real = tls.client_context
+
+    def spy(**kwargs: Any) -> ssl.SSLContext:
+        strict.append(kwargs["x509_strict"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(tls, "client_context", spy)
+    code, _, _ = proxy(*_user(pki), "-S", "atlas", "--vomses", str(voms.vomses))
+    assert code == 0 and strict == [False]
 
 
 def test_voms_lifetime_defaults_to_the_proxy_lifetime(
-    proxy: Proxy, pki: PKI, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    proxy: Proxy, pki: PKI, voms: VOMS, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(voms, "fetch_ac", _fake_fetch(pki, calls))
-    monkeypatch.setenv("X509_VOMSES", str(_vomses(tmp_path)))
-    code, _, _ = proxy(*_user(pki), "-S", "atlas", "--lifetime", "2h", "--insecure", "-t", "5")
+    monkeypatch.setenv("X509_VOMSES", str(voms.vomses))
+    code, _, _ = proxy(*_user(pki), "-S", "atlas", "--lifetime", "2h", "-t", "5")
     assert code == 0
-    assert calls[0]["lifetime"] == 7200
+    assert voms.server.requests[0].param("lifetime") == "7200"
 
 
-def test_voms_server_unknown(
-    proxy: Proxy, pki: PKI, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_voms_warning_is_logged(
+    proxy: Proxy, pki: PKI, voms: VOMS, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(voms, "fetch_ac", pytest.fail)
-    code, _, err = proxy(*_user(pki), "-S", "cms", "--vomses", str(_vomses(tmp_path)))
-    assert code == errno.ENOENT
-    assert "No VOMS server for 'cms'" in err
+    """An AC this machine cannot verify is still used, with a warning in the log, not a trace."""
+    monkeypatch.setenv("X509_VOMS_DIR", str(tmp_path / "empty-vomsdir"))
+    code, out, err = proxy(*_user(pki), "-S", "atlas", "--vomses", str(voms.vomses))
+    assert code == 0
+    assert err.startswith("WARNING: the attribute certificate from 127.0.0.1:")
+    assert "VOMSWarning" not in err
+    assert "AC extension information for VO atlas" in out
+
+
+def test_voms_refusal_is_a_credential_error(proxy: Proxy, pki: PKI, voms: VOMS) -> None:
+    voms.server.refuse("NoSuchUser", "not a member")
+    code, _, err = proxy(*_user(pki), "-S", "atlas", "--vomses", str(voms.vomses))
+    assert code == 3
+    assert "not a member" in err or "does not know your certificate" in err
+
+
+def test_vomses_missing_is_a_local_error(proxy: Proxy, pki: PKI) -> None:
+    code, _, err = proxy(*_user(pki), "-S", "atlas", "--vomses", "/nowhere")
+    assert code == 6
+    assert "/nowhere does not exist" in err
+
+
+def test_voms_server_unknown(proxy: Proxy, pki: PKI, voms: VOMS) -> None:
+    code, _, err = proxy(*_user(pki), "-S", "cms", "--vomses", str(voms.vomses))
+    assert code == 6
+    assert "no VOMS server is configured for 'cms'" in err
+
+
+def test_voms_bad_fqan_is_a_usage_error(proxy: Proxy, pki: PKI, voms: VOMS) -> None:
+    code, _, err = proxy(*_user(pki), "-S", "atlas:no-slash", "--vomses", str(voms.vomses))
+    assert code == 2
+    assert "not a VOMS FQAN" in err
+
+
+def test_voms_request_without_a_vo_is_a_usage_error(proxy: Proxy, pki: PKI) -> None:
+    code, _, err = proxy(*_user(pki), "-S", ":/atlas")
+    assert code == 2
+    assert "-S: a VOMS request needs a VO name" in err
+
+
+def test_voms_unreachable(proxy: Proxy, pki: PKI, tmp_path: Path) -> None:
+    vomses = tmp_path / "vomses"
+    vomses.write_text(vomses_line("atlas", "127.0.0.1", 1, "/CN=voms"))
+    code, _, err = proxy(*_user(pki), "-S", "atlas", "--vomses", str(vomses), "-t", "2")
+    assert code == 3
+    assert "127.0.0.1:1" in err

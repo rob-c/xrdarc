@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import errno
+import getpass
 import logging
 import runpy
 import sys
@@ -12,14 +12,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from xgfalclient.testing.pki import PKI
+from xrdhttp.session import UnverifiedTLSWarning
+from xrdsec.testing.pki import PKI
 
 from _arex import USER_DN
 from _client_helpers import dead_ce, job_of, messages, results, run, run_json
 from xrdarc import __version__, cli
 from xrdarc.cli import _common, jobs
 from xrdarc.client import ARCClient
-from xrdarc.creds import Auth
+from xrdarc.config import load_config
+from xrdarc.creds import Auth, discover
+from xrdarc.errors import CredentialError
 from xrdarc.joblist import Job, JobList
 from xrdarc.states import JobState
 from xrdarc.testing.arex import FakeARex
@@ -74,16 +77,16 @@ def test_python_dash_m(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.M
     assert "usage: xrdarc" in capsys.readouterr().out
 
 
-def test_fatal_error_exits_with_its_errno(xrdarc: Run) -> None:
+def test_fatal_error_exits_with_its_table_code(xrdarc: Run) -> None:
     code, out, err = xrdarc("stat")
-    assert code == errno.EINVAL
+    assert code == 2
     assert out == ""
     assert err == "xrdarc stat: No jobs given; name jobs, or use -a for all of them\n"
 
 
 def test_fatal_error_as_json(xrdarc_json: RunJSON) -> None:
     code, doc = xrdarc_json("stat", "nosuch")
-    assert code == errno.ENOENT
+    assert code == 1
     [error] = [r for r in doc["records"] if r["kind"] == "error"]
     assert error["error_type"] == "JobNotFoundError"
     assert error["operation"] == "stat"
@@ -131,23 +134,23 @@ def test_log_handler_is_added_once_and_follows_stderr(
     logger = logging.getLogger("xrdarc")
     _common.configure(_parse("stat"))
     _common.configure(_parse("stat"))
-    ours = [h for h in logger.handlers if getattr(h, "_xrdarc", False)]
-    assert len(ours) == 1
+    stderr_handlers = [h for h in logger.handlers if isinstance(h, logging.StreamHandler)]
+    assert len(stderr_handlers) == 1
     code, _ = run_json(capsys, "stat", "-d", "INFO")
-    assert code == errno.EINVAL
+    assert code == 2
     logger.warning("after the report")
     assert capsys.readouterr().err == "WARNING: after the report\n"
 
 
 def test_password_needs_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    with pytest.raises(_common.CredentialError, match="no terminal"):
+    with pytest.raises(CredentialError, match="no terminal"):
         _common._password()
 
 
 def test_password_is_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(_common.getpass, "getpass", lambda prompt: "secret")
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: "secret")
     assert _common._password() == b"secret"
 
 
@@ -210,14 +213,15 @@ def test_token_authentication(
     assert "xrdarc info:" in err
 
 
-@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
 def test_insecure_needs_no_ca(
     capsys: pytest.CaptureFixture[str], ce: FakeARex, pki: PKI, restore_logging: None
 ) -> None:
     code, _, err = run(capsys, "info", ce.url, "--proxy", str(pki.proxy_path))
     assert code == 1
     assert "TLS handshake failed" in err
-    code, out, _ = run(capsys, "info", ce.url, "--proxy", str(pki.proxy_path), "--insecure")
+    # Every unverified connection warns: the user is told, not silenced.
+    with pytest.warns(UnverifiedTLSWarning):
+        code, out, _ = run(capsys, "info", ce.url, "--proxy", str(pki.proxy_path), "--insecure")
     assert code == 0
     assert "fake-arex" in out
 
@@ -240,7 +244,7 @@ def test_jobids_from_file(xrdarc: Run, ce: FakeARex, tmp_path: Path) -> None:
 
 def test_jobids_file_missing(xrdarc: Run, tmp_path: Path) -> None:
     code, _, err = xrdarc("stat", "-i", str(tmp_path / "nope"))
-    assert code == errno.ENOENT
+    assert code == 6
     assert "Cannot read" in err
 
 
@@ -377,7 +381,7 @@ def test_wait_success_and_failure(xrdarc_json: RunJSON, ce: FakeARex) -> None:
 def test_wait_gives_up(xrdarc: Run, ce: FakeARex) -> None:
     _, url = job_of(ce, state="RUNNING")
     code, out, err = xrdarc("wait", url, "--interval", "0", "--max-wait", "0")
-    assert code == errno.ETIMEDOUT
+    assert code == 7
     assert out == f"{url}: Running\n"
     assert "1 jobs still not finished" in err
 
@@ -520,16 +524,22 @@ def test_resume(xrdarc_json: RunJSON, ce: FakeARex) -> None:
     code, doc = xrdarc_json("resume", url)
     assert code == 0
     assert results(doc) == [
-        {"sequence": 1, "kind": "result", "operation": "resume", "job": url, "ok": True,
-         "reason": "Queued for restarting"}
-    ]  # fmt: skip
+        {
+            "sequence": 1,
+            "kind": "result",
+            "operation": "resume",
+            "job": url,
+            "ok": True,
+            "reason": "Queued for restarting",
+        }
+    ]
     assert messages(doc) == "Jobs processed: 1, resumed: 1\n"
 
 
 def test_renew(xrdarc: Run, ce: FakeARex, listed: Listed, pki: PKI) -> None:
     with ARCClient(
-        config=_common.load_config(),
-        credentials=_common.discover(_common.load_config()),
+        config=load_config(),
+        credentials=discover(load_config()),
         joblist=False,
     ) as arc:
         delegation_id = arc.delegate(ce.url)
@@ -584,7 +594,7 @@ def test_sync(xrdarc: Run, ce: FakeARex, make_ce: Callable[..., FakeARex], jobs_
 
 def test_sync_needs_a_ce(xrdarc: Run, xrdarc_json: RunJSON, ce: FakeARex, tmp_path: Path) -> None:
     code, _, err = xrdarc("sync")
-    assert code == errno.EINVAL
+    assert code == 2
     assert "No computing element given" in err
     conf = tmp_path / "client.conf"
     conf.write_text(f"[computing/mine]\nurl = {ce.url}\ndefault = yes\n")

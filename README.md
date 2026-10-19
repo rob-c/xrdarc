@@ -23,10 +23,15 @@ with xrdarc.ARCClient() as arc:
     arc.get([done.job], "results")
 ```
 
-It is built on [xrdclient](https://github.com/rob-c/xrdclient) and
-[xgfalclient](https://github.com/rob-c/xgfalclient) and shares their
-credential discovery, TLS policy, VOMS decoding, safe XML parsing and
-versioned JSON/XML report format.
+It is built on the grid libraries shared with the storage clients
+([xrdclient](https://github.com/rob-c/xrdclient),
+[xgfalclient](https://github.com/rob-c/xgfalclient)), and on no client:
+[xrdsec](https://github.com/rob-c/xrdsec) finds the credentials (ARC's own
+search order), builds the TLS context, issues proxies and fetches VOMS
+attributes; [xrdcore](https://github.com/rob-c/xrdcore) supplies safe XML
+parsing, the versioned JSON/XML report format, backoff, cancellation and
+log redaction. How the pieces fit is in
+[docs/architecture.md](https://github.com/rob-c/xrdarc/blob/main/docs/architecture.md).
 
 ## Install
 
@@ -34,10 +39,10 @@ versioned JSON/XML report format.
 $ pip install xrdarc
 ```
 
-Requires Python 3.11+. Runtime dependencies are `xrdclient`, `xgfalclient`,
-`cryptography` and `urllib3`, all of which install from wheels on Linux
-(glibc and musl) and macOS. Windows is not supported yet: xrdclient 0.3.2
-does not import there (see
+Requires Python 3.11+. Runtime dependencies are `xrdcore`, `xrdsec`
+(with `asn1crypto`), `xrdhttp` (without its `s3` extra) and `cryptography`, all of which install
+from wheels on Linux (glibc and musl) and macOS. Windows is not supported
+yet (see
 [docs/platforms.md](https://github.com/rob-c/xrdarc/blob/main/docs/platforms.md)).
 
 ## Commands
@@ -64,6 +69,13 @@ Every subcommand takes `--json` or `--xml` and then emits one versioned
 report document (the `storage-client-report` schema shared with xrdclient
 and xgfalclient), with one record per job and numeric error codes.
 
+Exit codes come from one fixed table: 0 success, 1 some jobs failed, 2 a
+usage error, 3-7 fatal credential, description, CE, local and timeout
+errors, 130 interrupted, 141 a closed pipe (see
+[docs/compatibility.md](https://github.com/rob-c/xrdarc/blob/main/docs/compatibility.md)).
+Bearer tokens are best given with `--token-file PATH` or `--token -`
+(standard input), which keep them out of the process list.
+
 ## Compatible with ARC's own tools
 
 * **The job list is ARC's.** Jobs go into `~/.arc/jobs.dat` in ARC's
@@ -74,9 +86,13 @@ and xgfalclient), with one record per job and numeric error codes.
   `[computing/<alias>]` services, default CEs, the proxy and CA paths, the
   timeout and the download directory.
 * **Credentials are found where ARC finds them.** `X509_USER_PROXY`, then
-  `proxypath`, then `/tmp/x509up_u<uid>`, then the user certificate. Tokens
-  are found by WLCG bearer-token discovery. Trust anchors come from
-  `X509_CERT_DIR` or `/etc/grid-security/certificates`.
+  `proxypath`, then `/tmp/x509up_u<uid>` (and under `$TMPDIR`), then the
+  user certificate from the environment, `client.conf`, `~/.arc` or
+  `~/.globus`. Tokens are found by WLCG bearer-token discovery. Trust
+  anchors come from `X509_CERT_DIR`, `cacertificatesdirectory`,
+  `~/.arc/certificates`, `~/.globus/certificates` or
+  `/etc/grid-security/certificates`; `X509_CERT_POLICY=any` adds the
+  system store, as in ARC.
 * **Job descriptions** are xRSL (`&`, and `+` for several jobs) or ADL.
   xRSL is parsed client side with ARC's grammar: quoting, `(* comments *)`,
   `rsl_substitution`/`$(VAR)`, and user-dialect times in minutes. It is

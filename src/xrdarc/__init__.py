@@ -10,6 +10,14 @@ job list shared with ARC's own command-line tools::
         [sub] = arc.submit("ce.example.org", '&(executable="/bin/hostname")(stdout="out")')
         [done] = arc.wait([sub.job])
         arc.get([done.job], "results")
+
+Where to start reading: :mod:`xrdarc.client` (the operations), which drives
+:mod:`xrdarc.rest` (one method per A-REX endpoint) over
+:mod:`xrdarc.transport` (HTTPS), with :mod:`xrdarc.creds` deciding what to
+present and :mod:`xrdarc.joblist` remembering what was submitted. The
+command line (:mod:`xrdarc.cli`) is a thin layer over :class:`ARCClient`.
+No TLS context is built and no CE is contacted until a client makes its
+first request.
 """
 
 from __future__ import annotations
@@ -33,31 +41,27 @@ from .states import JobState
 from .transport import Session
 
 __all__ = [
-    "__version__",
-    # the client
     "ARCClient",
-    "Outcome",
-    "Submission",
-    "RESTClient",
-    "Session",
-    # jobs and CEs
-    "Job",
-    "JobList",
-    "JobRecord",
-    "JobState",
-    "CEInfo",
-    "Queue",
-    # configuration and credentials
-    "UserConfig",
-    "load_config",
-    "Auth",
-    "Credentials",
-    "discover",
-    # errors
     "ARCError",
+    "Auth",
+    "CEInfo",
     "CredentialError",
+    "Credentials",
     "DescriptionError",
     "HTTPError",
+    "Job",
+    "JobList",
     "JobNotFoundError",
+    "JobRecord",
+    "JobState",
     "NotAllowedError",
+    "Outcome",
+    "Queue",
+    "RESTClient",
+    "Session",
+    "Submission",
+    "UserConfig",
+    "__version__",
+    "discover",
+    "load_config",
 ]

@@ -16,7 +16,16 @@ from _arex import USER_DN
 from xrdarc import cli
 from xrdarc.testing.arex import FakeARex, FakeJob
 
-__all__ = ["XRSL", "dead_ce", "job_of", "messages", "results", "run", "run_json"]
+__all__ = [
+    "XRSL",
+    "dead_ce",
+    "job_of",
+    "messages",
+    "never_sleep",
+    "results",
+    "run",
+    "run_json",
+]
 
 #: A job with no uploads, so the fake needs nothing but the POST.
 XRSL = '&(executable="/bin/echo")(jobname="hello")(stdout="out.txt")(stderr="err.txt")'
@@ -28,6 +37,11 @@ def dead_ce() -> str:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     return f"https://127.0.0.1:{port}/arex"
+
+
+def never_sleep(seconds: float) -> None:
+    """A ``sleep`` for a wait that must settle in its first round: any pause fails the test."""
+    pytest.fail(f"slept {seconds}s; the wait should have settled at once")
 
 
 def job_of(ce: FakeARex, description: str = XRSL, **kwargs: Any) -> tuple[FakeJob, str]:

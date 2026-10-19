@@ -4,26 +4,27 @@ from __future__ import annotations
 
 import dataclasses
 import errno
+import functools
 import io
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-from xgfalclient.testing.pki import PKI
+from xrdsec.testing.pki import PKI
 
 import xrdarc
-from _arex import USER_DN, make_credentials, make_session
-from _client_helpers import XRSL, dead_ce, job_of
-from xrdarc import client as client_module
-from xrdarc.client import ARCClient, Outcome, Submission
+from _arex import USER_DN, make_session
+from _client_helpers import XRSL, dead_ce, job_of, never_sleep
+from xrdarc.client import ARCClient, Outcome, Submission, _submit
 from xrdarc.config import Service, UserConfig
 from xrdarc.creds import Credentials
 from xrdarc.errors import ARCError, CredentialError, DescriptionError, HTTPError, JobNotFoundError
 from xrdarc.joblist import Job, JobList
 from xrdarc.states import JobState
 from xrdarc.testing.arex import FakeARex
+from xrdarc.testing.fixtures import SessionFactory, make_credentials
 
 pytest_plugins = ["_arex"]
 
@@ -52,30 +53,17 @@ def _urls(jobs: list[Job]) -> list[str]:
     return [job.url for job in jobs]
 
 
-def _submit_one(arc: ARCClient, ce: FakeARex, text: str = XRSL, **kwargs: object) -> Job:
-    [submission] = arc.submit(ce.url, text, **kwargs)  # type: ignore[arg-type]
+def _submit_one(arc: ARCClient, ce: FakeARex, text: str = XRSL, **kwargs: Any) -> Job:
+    [submission] = arc.submit(ce.url, text, **kwargs)
     assert submission.ok, submission.reason
     assert submission.job is not None
     return submission.job
 
 
 @pytest.fixture
-def make_arc(
-    tmp_path: Path, credentials: Credentials, sleeps: list[float]
-) -> Iterator[Callable[..., ARCClient]]:
-    made: list[ARCClient] = []
-
-    def factory(**kwargs: Any) -> ARCClient:
-        creds = kwargs.pop("credentials", credentials)
-        kwargs.setdefault("config", UserConfig(joblist=tmp_path / "jobs.dat"))
-        kwargs.setdefault("session", make_session(creds, sleeps=sleeps))
-        client = ARCClient(credentials=creds, **kwargs)
-        made.append(client)
-        return client
-
-    yield factory
-    for client in made:
-        client.close()
+def arc_session_factory(sleeps: list[float]) -> SessionFactory:
+    """``make_arc``'s clients retry like ``session`` and record their pauses in ``sleeps``."""
+    return functools.partial(make_session, sleeps=sleeps)
 
 
 @pytest.fixture
@@ -112,7 +100,9 @@ def test_no_job_list(make_arc: MakeArc, ce: FakeARex, given: bool | None) -> Non
 
 
 def test_job_list_as_path_or_object(make_arc: MakeArc, tmp_path: Path) -> None:
-    assert make_arc(joblist=tmp_path / "a.dat").joblist.path == tmp_path / "a.dat"  # type: ignore[union-attr]
+    own = make_arc(joblist=tmp_path / "a.dat").joblist
+    assert own is not None
+    assert own.path == tmp_path / "a.dat"
     shared = JobList(tmp_path / "b.dat")
     assert make_arc(joblist=shared).joblist is shared
 
@@ -260,8 +250,9 @@ def test_abandon_failures_are_logged(
     with caplog.at_level(logging.WARNING, "xrdarc"):
         [submission] = arc.submit(ce.url, '&(executable="run.sh")', base=tmp_path)
     assert not submission.ok
-    assert "could not kill job" in caplog.text
-    assert "could not clean job" in caplog.text
+    assert "kill: HTTP 403 Denied; clean: HTTP 403 Denied" in caplog.text
+    [kept] = arc.known()
+    assert "could not be removed from the CE" in kept.errors[0]
 
 
 def test_bad_description_fails_before_the_ce_is_contacted(
@@ -297,10 +288,10 @@ def test_adl_on_rest_11_passes_the_delegation_as_a_parameter(arc: ARCClient, ce:
 def test_several_descriptions_must_be_xrsl(arc: ARCClient, tmp_path: Path) -> None:
     [xrsl] = arc.prepare(XRSL, base=tmp_path)
     [adl] = arc.prepare(ADL, base=tmp_path)
-    assert client_module._bundle([xrsl]) == xrsl.description
+    assert _submit._bundle([xrsl]) == xrsl.description
     with pytest.raises(DescriptionError, match="only be submitted together as xRSL"):
-        client_module._bundle([xrsl, adl])
-    twice = client_module._bundle([xrsl, dataclasses.replace(xrsl, description=" &(a=b)")])
+        _submit._bundle([xrsl, adl])
+    twice = _submit._bundle([xrsl, dataclasses.replace(xrsl, description=" &(a=b)")])
     assert twice.startswith("+(&")
 
 
@@ -405,7 +396,7 @@ def test_wait_times_out(arc: ARCClient, ce: FakeARex) -> None:
 
 def test_wait_without_timeout_or_callback(arc: ARCClient, ce: FakeARex) -> None:
     _, url = job_of(ce, state="FINISHED")
-    [done] = arc.wait([Job.from_url(url)], sleep=pytest.fail)
+    [done] = arc.wait([Job.from_url(url)], sleep=never_sleep)
     assert done.job.state is JobState.FINISHED
 
 
@@ -538,7 +529,8 @@ def test_retrieve_refuses_an_existing_target(arc: ARCClient, ce: FakeARex, tmp_p
         arc.retrieve(job, tmp_path, name="named")
     assert caught.value.code == errno.EEXIST
     target = arc.retrieve(job, tmp_path, name="named", force=True)
-    assert sorted(p.name for p in target.iterdir()) == ["out.txt", "sub"]
+    # As arcget -f: the job's files are written into it, what else is there stays.
+    assert sorted(p.name for p in target.iterdir()) == ["out.txt", "stale", "sub"]
 
 
 def test_retrieve_saves_gmlog_from_diagnose(arc: ARCClient, ce: FakeARex, tmp_path: Path) -> None:

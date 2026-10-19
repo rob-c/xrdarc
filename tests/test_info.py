@@ -298,7 +298,7 @@ def test_activity_empty() -> None:
         None,
     )
     assert record.errors == record.execution_nodes == record.other_messages == ()
-    assert record.name is record.exit_code is record.submitted is record.ended is None
+    assert (record.name, record.exit_code, record.submitted, record.ended) == (None,) * 4
 
 
 def test_activity_unknown_rest_state_is_other() -> None:

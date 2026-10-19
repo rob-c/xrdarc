@@ -1,0 +1,82 @@
+# Builds the sdist and wheel on a version tag, checks them against what is on
+# PyPI, and attaches them to a GitHub release. xrdarc is released on GitHub
+# only: nothing is uploaded to PyPI (see the note at the end to enable that).
+#
+# xrdarc is built on xrdcore, xrdsec and xrdhttp, which must already be on PyPI: the
+# pre-flight refuses to release otherwise, and the release wheel is then
+# installed from PyPI alone, never from a checkout, and the suite run against
+# it. Release order and the whole chain's runbook: docs/releasing.md in
+# rob-c/xrdclient ("Releasing the 0.4.0 chain", step 5).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Every build step is xrd-devtools' shared publish action: build, `twine
+  # check --strict`, the pre-flight (xrdcore, xrdsec and xrdhttp are on PyPI),
+  # a clean install whose tag, runtime version and dated changelog section
+  # agree and that pulled in no storage client, then the checkout's tests
+  # against that installed wheel (src/ is not on pytest's path - only the
+  # checkout root, for tests/ - so every import of xrdarc is the release's;
+  # tests/test_scorecard.py skips there, radon and complexipy not being
+  # installed; the gate is required in CI).
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: rob-c/xrd-devtools/.github/actions/publish@main
+        with:
+          package: xrdarc
+          preflight: true
+          absent: xrdclient xgfalclient
+          suite-requirements: pytest>=8 pytest-timeout pytest-xdist hypothesis>=6
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: create the release with the wheel and sdist attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          # This version's CHANGELOG section, without its heading.
+          awk -v heading="## [${version}]" '
+            /^## \[/ { inside = (index($0, heading) == 1); next }
+            inside
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "xrdarc $version" --notes-file "$RUNNER_TEMP/notes.md"
+
+  # PyPI is not enabled. To publish there too: add a pending trusted publisher
+  # on PyPI (owner rob-c, repository xrdarc, workflow release.yml, environment
+  # pypi), create the "pypi" environment in this repository (Settings,
+  # Environments, restricted to v* tags), then uncomment this job. It uploads
+  # the same artifact the GitHub release carries.
+  #
+  # publish:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   environment: pypi
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: dist
+  #         path: dist/
+  #     - uses: pypa/gh-action-pypi-publish@release/v1

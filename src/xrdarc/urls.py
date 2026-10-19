@@ -28,6 +28,7 @@ _JOB_PATH = re.compile(r"^(?P<base>.*?)/rest/(?P<version>[^/]+)/jobs/(?P<id>[^/?
 
 
 def _host_port(netloc: str, scheme: str, given: str) -> tuple[str, int]:
+    """Host and port of a URL's authority, the scheme's port if none (``given`` is for messages)."""
     probe = urllib.parse.urlsplit(f"//{netloc}")
     host = probe.hostname
     if not host:
@@ -39,18 +40,21 @@ def _host_port(netloc: str, scheme: str, given: str) -> tuple[str, int]:
     return host, port
 
 
+def _with_scheme(text: str) -> str:
+    """``text`` stripped, ``https://`` in front if it has no scheme (``arcsub -C ce.example``)."""
+    given = text.strip()
+    if not given:
+        raise DescriptionError("No computing element given")
+    return given if "://" in given else f"https://{given}"
+
+
 def ce_url(text: str) -> str:
     """The canonical CE URL for anything ``arcsub -C`` would accept.
 
     Raises ``DescriptionError`` for an empty string, a scheme other than
     ``https``/``http``, or a URL with no host.
     """
-    given = text.strip()
-    if not given:
-        raise DescriptionError("No computing element given")
-    if "://" not in given:
-        given = f"https://{given}"
-    parts = urllib.parse.urlsplit(given)
+    parts = urllib.parse.urlsplit(_with_scheme(text))
     scheme = parts.scheme.lower()
     if scheme not in DEFAULT_PORT:
         raise DescriptionError(
@@ -70,6 +74,7 @@ class JobURL:
     id: str
 
     def __str__(self) -> str:
+        """The canonical job URL (what the job list stores)."""
         return job_url(self.ce, self.id)
 
 

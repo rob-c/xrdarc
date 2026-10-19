@@ -3,6 +3,19 @@
 Every test is hermetic: no ambient proxy, token, CA directory, ``client.conf``
 or job list from the developer's shell leaks in. A test that wants
 credentials asks for ``grid_env`` (an in-process PKI) or builds them.
+
+The credential side is :mod:`xrdsec.testing.fixtures`, the plugin every
+suite on the stack loads: the environment is cleared, ``HOME`` is a fresh
+directory, :data:`xrdsec.credentials.TMP_DIR` - the ``/tmp`` of
+``/tmp/x509up_u<uid>`` and ``/tmp/bt_u<uid>`` - points at an empty
+directory, so the developer's real proxy and token are never found, and
+:data:`xrdsec.credentials.GRID_SECURITY_DIRS` replaces ``/etc/grid-security``
+(and Homebrew's) with a directory of the test's own, so "no CA directory
+anywhere" means the same on a grid node, a laptop and CI, and the VOMS code
+never reads the host's ``vomsdir``. It also provides the ``home``,
+``tmp_dir``, ``grid_security``, ``pki`` and ``grid_env`` fixtures.
+:func:`pytest_xrdsec_hermetic` adds xrdarc's own inputs; interop tests are
+marked ``ambient`` and keep the developer's real environment.
 """
 
 from __future__ import annotations
@@ -10,75 +23,59 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-from xgfalclient import creds as gfal_creds
-from xgfalclient.testing.pki import PKI, create_pki
 
-from xrdarc import config, creds
+from xrdarc import config
+from xrdarc.testing.fixtures import gate_interop
 
-_AMBIENT = (
-    "X509_USER_PROXY", "X509_USER_CERT", "X509_USER_KEY", "X509_CERT_DIR", "X509_VOMS_DIR",
-    "X509_VOMSES", "X509_VOMS_FILE", "BEARER_TOKEN", "BEARER_TOKEN_FILE", "XDG_RUNTIME_DIR",
-    "TMPDIR", "ARC_LOCATION", "USERPROFILE",
-    # Python 3.14 colours argparse help when these say so (CI sets FORCE_COLOR).
-    "FORCE_COLOR", "PYTHON_COLORS",
-)  # fmt: skip
+if TYPE_CHECKING:
+    from xrdsec.testing.fixtures import Hermetic
 
-#: A uid nobody has, so ``/tmp/x509up_u<uid>`` and ``/tmp/bt_u<uid>`` never exist.
-UNUSED_UID = 7_654_321
+# xrdarc.testing.fixtures: the fake CE, its credentials, ``make_arc`` and the
+# interop gate, shared with xrdwms's suite.
+pytest_plugins = ["xrdsec.testing.fixtures", "xrdarc.testing.fixtures"]
+
+#: xrdarc's own inputs, cleared on top of the credential variables the
+#: plugin clears: VOMS client settings that are not ``X509_*``, ``$TMPDIR``
+#: (an ARC proxy location), the ARC installation, Windows' home, and the
+#: switches with which Python 3.14 colours argparse help (CI sets FORCE_COLOR).
+_OWN = (
+    "VOMS_USERCONF",
+    "TMPDIR",
+    "ARC_LOCATION",
+    "USERPROFILE",
+    "FORCE_COLOR",
+    "PYTHON_COLORS",
+)
+
+#: The name of this user's default proxy file (in the hermetic ``TMP_DIR``).
+PROXY_NAME = f"x509up_u{os.geteuid()}"
+#: The name of this user's last-resort token file (in the hermetic ``TMP_DIR``).
+TOKEN_NAME = f"bt_u{os.geteuid()}"
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Interop tests need a real CE and the developer's credentials: opt in only."""
-    if os.environ.get("XRDARC_INTEROP") == "1":
-        return
-    skip = pytest.mark.skip(reason="needs a real ARC CE; set XRDARC_INTEROP=1")
-    for item in items:
-        if item.get_closest_marker("interop"):
-            item.add_marker(skip)
+    """Interop tests need a real CE and the developer's credentials: opt in only.
+
+    They are ``ambient`` (the hermetic environment leaves them alone), and
+    skipped unless ``XRDARC_INTEROP=1``.
+    """
+    gate_interop(
+        items, variable="XRDARC_INTEROP", reason="needs a real ARC CE; set XRDARC_INTEROP=1"
+    )
 
 
-@pytest.fixture(autouse=True)
-def _hermetic(
-    request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path_factory: pytest.TempPathFactory,
-) -> Path:
-    home = tmp_path_factory.mktemp("home")
-    if request.node.get_closest_marker("interop"):
-        return home
-    for name in _AMBIENT:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(creds, "_uid", lambda: str(UNUSED_UID))
-    monkeypatch.setattr(gfal_creds, "_uid", lambda: UNUSED_UID)
-    monkeypatch.setattr(config, "SYSTEM_CONFIG", home / "no-system-client.conf")
-    # No grid CA directory of the machine running the tests.
-    monkeypatch.setattr(gfal_creds, "find_ca_path", lambda environ=None: None)
-    creds._CONTEXTS.clear()
-    return home
-
-
-@pytest.fixture
-def home(_hermetic: Path) -> Path:
-    return _hermetic
-
-
-@pytest.fixture(scope="session")
-def pki(tmp_path_factory: pytest.TempPathFactory) -> PKI:
-    return create_pki(tmp_path_factory.mktemp("pki"))
-
-
-@pytest.fixture
-def grid_env(monkeypatch: pytest.MonkeyPatch, pki: PKI) -> Iterator[PKI]:
-    for name, value in pki.environment().items():
-        monkeypatch.setenv(name, value)
-    yield pki
+def pytest_xrdsec_hermetic(hermetic: Hermetic) -> None:
+    """xrdarc's own inputs, on top of xrdsec's: its variables, and no system ``client.conf``."""
+    hermetic.unset(*_OWN)
+    hermetic.monkeypatch.setattr(config, "SYSTEM_CONFIG", hermetic.home / "no-system-client.conf")
 
 
 @pytest.fixture
 def chdir(tmp_path: Path) -> Iterator[Path]:
+    """Run the test from inside ``tmp_path``."""
     old = Path.cwd()
     os.chdir(tmp_path)
     try:

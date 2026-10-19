@@ -405,6 +405,11 @@ def base(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _upload(name: str, source: Path, executable: bool) -> Upload:
+    """The upload ``prepare`` makes of ``source``: with its size, which the CE is told too."""
+    return Upload(name, source, executable, source.stat().st_size)
+
+
 def prepared(text: str, base: Path, **kwargs: str) -> PreparedJob:
     jobs = prepare(text, base=base, **kwargs)
     assert len(jobs) == 1
@@ -444,11 +449,11 @@ def test_prepare_upload_job(base: Path) -> None:
         base,
     )
     assert job.uploads == (
-        Upload("upload.sh", base / "upload.sh", True),
-        Upload("in.bin", base / "in.bin", False),
+        _upload("upload.sh", base / "upload.sh", True),
+        _upload("in.bin", base / "in.bin", False),
     )
     assert job.description == (
-        '&(executable = "upload.sh")(inputfiles = ("upload.sh" "") ("in.bin" ""))'
+        '&(executable = "upload.sh")(inputfiles = ("upload.sh" "9") ("in.bin" "6"))'
         '(outputfiles = ("sum.txt" "") ("copy.bin" "") ("out.txt" ""))(stdout = "out.txt")'
         '(jobname = "t2-upload")(executables = "upload.sh")'
     )
@@ -491,7 +496,7 @@ def test_prepare_executable_listed_input_with_rte(base: Path) -> None:
     )
     assert job.runtime_environments == ("ENV/PROXY", "APPS/HEP/ATLAS-1.0")
     assert Relation("runtimeenvironment", "=", ("APPS/HEP/ATLAS-1.0", "opt1")) in job.relations
-    assert job.uploads == (Upload("proxy.sh", base / "proxy.sh", True),)
+    assert job.uploads == (_upload("proxy.sh", base / "proxy.sh", True),)
 
 
 def test_prepare_multicore_and_times(base: Path) -> None:
@@ -525,7 +530,7 @@ def test_prepare_multi_job_in_order(base: Path) -> None:
         base=base,
     )
     assert [job.name for job in jobs] == ["one", "two"]
-    assert jobs[1].uploads == (Upload("upload.sh", base / "upload.sh", True),)
+    assert jobs[1].uploads == (_upload("upload.sh", base / "upload.sh", True),)
 
 
 def test_prepare_multi_job_error_names_the_job(base: Path) -> None:
@@ -575,14 +580,16 @@ def test_local_sources_become_uploads(base: Path) -> None:
         base,
     )
     assert job.uploads == (
-        Upload("a", base / "data.txt", False),
-        Upload("b", base / "in.bin", False),
-        Upload("c", base / "sub" / "nested.txt", False),
-        Upload("d", base / "data.txt", False),
-        Upload("sub/nested.txt", base / "sub" / "nested.txt", False),
+        _upload("a", base / "data.txt", False),
+        _upload("b", base / "in.bin", False),
+        _upload("c", base / "sub" / "nested.txt", False),
+        _upload("d", base / "data.txt", False),
+        _upload("sub/nested.txt", base / "sub" / "nested.txt", False),
     )
     assert Relation(
-        "inputfiles", "=", (("a", ""), ("b", ""), ("c", ""), ("d", ""), ("sub/nested.txt", ""))
+        "inputfiles",
+        "=",
+        (("a", "8"), ("b", "6"), ("c", "6"), ("d", "8"), ("sub/nested.txt", "6")),
     ) in (job.relations)
     assert job.remote_staging is False
 
@@ -590,14 +597,14 @@ def test_local_sources_become_uploads(base: Path) -> None:
 def test_relative_base_gives_absolute_sources(base: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(base.parent)
     job = prepared('&(executable="upload.sh")', Path(base.name))
-    assert job.uploads == (Upload("upload.sh", base / "upload.sh", True),)
+    assert job.uploads == (_upload("upload.sh", base / "upload.sh", True),)
     assert job.uploads[0].source.is_absolute()
 
 
 def test_stdin_is_uploaded(base: Path) -> None:
     job = prepared('&(executable="/bin/cat")(stdin="stdin.txt")', base)
-    assert job.uploads == (Upload("stdin.txt", base / "stdin.txt", False),)
-    assert Relation("inputfiles", "=", (("stdin.txt", ""),)) in job.relations
+    assert job.uploads == (_upload("stdin.txt", base / "stdin.txt", False),)
+    assert Relation("inputfiles", "=", (("stdin.txt", "9"),)) in job.relations
     job = prepared('&(executable="/bin/cat")(stdin="/dev/null")', base)
     assert job.uploads == ()
 
@@ -615,9 +622,9 @@ def test_executables_attribute(base: Path) -> None:
         base,
     )
     assert job.uploads == (
-        Upload("in.bin", base / "in.bin", False),
-        Upload("proxy.sh", base / "proxy.sh", True),
-        Upload("upload.sh", base / "upload.sh", True),
+        _upload("in.bin", base / "in.bin", False),
+        _upload("proxy.sh", base / "proxy.sh", True),
+        _upload("upload.sh", base / "upload.sh", True),
     )
     assert Relation("executables", "=", ("proxy.sh", "upload.sh")) in job.relations
     job = prepared('&(executable="upload.sh")(executables="upload.sh")', base)
@@ -635,7 +642,7 @@ def test_several_inputfiles_relations_merge(base: Path) -> None:
     job = prepared(
         '&(inputfiles=("in.bin" ""))(executable="/bin/true")(inputfiles=("data.txt" ""))', base
     )
-    assert job.relations[0] == Relation("inputfiles", "=", (("in.bin", ""), ("data.txt", "")))
+    assert job.relations[0] == Relation("inputfiles", "=", (("in.bin", "6"), ("data.txt", "8")))
     assert [r.attribute for r in job.relations] == ["inputfiles", "executable"]
 
 

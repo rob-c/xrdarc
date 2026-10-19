@@ -1,11 +1,15 @@
-"""The fake A-REX, driven with raw ``http.client`` and ``ssl``: no xrdarc client code."""
+"""The fake A-REX, driven with raw ``xrdhttp.connection`` connections: no xrdarc client code.
+
+Those are the stdlib's ``http.client`` connections (the chain names that module
+only through xrdhttp); TLS contexts come from the test PKI and :mod:`xrdsec.tls`.
+"""
 
 from __future__ import annotations
 
 import contextlib
-import http.client
 import json
 import os
+import secrets
 import socket
 import ssl
 import threading
@@ -22,24 +26,31 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from xgfalclient.crypto.proxy import sign_request
-from xgfalclient.testing.pki import PKI, create_pki
+from xrdcore import safexml
+from xrdhttp.connection import HTTPConnection, HTTPSConnection, RemoteDisconnected
+from xrdsec import tls
+from xrdsec.testing.pki import PKI
 
-from xrdarc.testing import arex
+from xrdarc.proxy import sign_request
 from xrdarc.testing.arex import (
     CANCEL_CAUSE,
     DEFAULT_PROGRESSION,
     DIAGNOSE_ITEMS,
     GLUE2_NS,
+    OPERATIONS,
     CEInfo,
     FakeARex,
     FakeQueue,
+    _descriptions,
+    _model,
+    _render,
+    _wire,
 )
 
 ALICE = "/CN=alice"
 BOB = "/CN=bob"
 TOKENS = {"alice-token": ALICE, "bob-token": BOB}
-USER_DN = "/DC=org/DC=xgfal/OU=People/CN=Test User"
+USER_DN = "/DC=org/DC=xrdsec/OU=People/CN=Test User"
 XRSL = '&(executable="/bin/echo")(jobname = "hello")(stdout = "out.txt")(stderr="err.txt")'
 ADL = (
     '<ActivityDescription xmlns="http://www.eu-emi.eu/es/2010/12/adl" '
@@ -61,18 +72,6 @@ ADL = (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def hermetic(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in list(os.environ):
-        if name.startswith(("X509_", "BEARER_")):
-            monkeypatch.delenv(name)
-
-
-@pytest.fixture(scope="session")
-def pki(tmp_path_factory: pytest.TempPathFactory) -> PKI:
-    return create_pki(tmp_path_factory.mktemp("pki"))
-
-
 @dataclass
 class Reply:
     status: int
@@ -90,7 +89,7 @@ class Reply:
 
 
 class Client:
-    """``http.client`` with A-REX conventions: a token, ``Accept``, ``/arex/rest/<v>/``."""
+    """A bare HTTP connection with A-REX conventions: a token, ``Accept``, ``/arex/rest/<v>/``."""
 
     def __init__(
         self,
@@ -102,12 +101,10 @@ class Client:
         self.ce, self.token, self.context = ce, token, context
         self.connection = self.connect()
 
-    def connect(self) -> http.client.HTTPConnection:
+    def connect(self) -> HTTPConnection | HTTPSConnection:
         if self.context is not None:
-            return http.client.HTTPSConnection(
-                self.ce.host, self.ce.port, context=self.context, timeout=10
-            )
-        return http.client.HTTPConnection(self.ce.host, self.ce.port, timeout=10)
+            return HTTPSConnection(self.ce.host, self.ce.port, timeout=10, ssl_context=self.context)
+        return HTTPConnection(self.ce.host, self.ce.port, timeout=10)
 
     def request(
         self,
@@ -175,7 +172,7 @@ def bob(ce: FakeARex) -> Iterator[Client]:
 
 
 def _key(slot: int) -> rsa.RSAPrivateKey:
-    return arex._delegation_key(slot)
+    return _model._delegation_key(slot)
 
 
 def _proxy_for(pki: PKI, csr_pem: bytes, *, signer: rsa.RSAPrivateKey | None = None) -> bytes:
@@ -234,7 +231,7 @@ def test_versions_in_every_format(client: Client) -> None:
 
 
 def test_accept_header_repeated_takes_the_first_recognised(ce: FakeARex) -> None:
-    connection = http.client.HTTPConnection(ce.host, ce.port, timeout=10)
+    connection = HTTPConnection(ce.host, ce.port, timeout=10)
     connection.putrequest("GET", "/arex/rest")
     connection.putheader("Authorization", "Bearer alice-token")
     connection.putheader("Accept", "image/png")
@@ -301,9 +298,9 @@ def test_not_implemented(client: Client, method: str, path: str, reason: str) ->
 
 
 def test_query_parsing_rules() -> None:
-    assert arex._split_target("/a%20b?x=1&x=2&y=%41") == ("/a b", {"x": "1", "y": "A"})
-    assert arex._split_target("/info;schema=glue2") == ("/info", {"schema": "glue2"})
-    assert arex._split_target("/plain") == ("/plain", {"": ""})
+    assert _wire._split_target("/a%20b?x=1&x=2&y=%41") == ("/a b", {"x": "1", "y": "A"})
+    assert _wire._split_target("/info;schema=glue2") == ("/info", {"schema": "glue2"})
+    assert _wire._split_target("/plain") == ("/plain", {"": ""})
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +340,9 @@ def test_tls_identity_is_the_end_entity_subject(tmp_path: Path, pki: PKI) -> Non
             assert client.submit(XRSL).status == 201
             assert ce.requests[-1].identity == USER_DN
             client.close()
-        eec = ssl.create_default_context(cafile=str(pki.ca_file))
-        eec.load_cert_chain(str(pki.user_cert_path), str(pki.user_key_path))
+        eec = tls.client_context(
+            cert=pki.user_cert_path, key=pki.user_key_path, ca_file=pki.ca_file
+        )
         client = Client(ce, token=None, context=eec)
         assert len(client.request("GET", "jobs").jobs) == 3
         # A token wins over the certificate.
@@ -357,8 +355,7 @@ def test_tls_identity_is_the_end_entity_subject(tmp_path: Path, pki: PKI) -> Non
 def test_tls_without_client_certificate_needs_a_token(tmp_path: Path, pki: PKI) -> None:
     server = pki.server_context(require_client=False)
     with FakeARex(tmp_path, tls=server, tokens=TOKENS) as ce:
-        context = ssl.create_default_context(cafile=str(pki.ca_file))
-        client = Client(ce, token=None, context=context)
+        client = Client(ce, token=None, context=pki.client_context(anonymous=True))
         assert client.request("GET", "/arex/rest").status == 403
         client.token = "alice-token"
         assert client.request("GET", "/arex/rest").status == 200
@@ -427,7 +424,7 @@ def test_info_xml_and_options(tmp_path: Path) -> None:
     with FakeARex(tmp_path, tokens=TOKENS, info=info) as ce:
         client = Client(ce)
         reply = client.request("GET", "/arex/rest/1.0/info;schema=glue2", accept="text/xml")
-        root = ET.fromstring(reply.body)
+        root = safexml.fromstring(reply.body)
         assert root.tag == "InfoRoot"
         service = root.find(f"{{{GLUE2_NS}}}Domains/*/*/{{{GLUE2_NS}}}ComputingService")
         assert service is not None
@@ -481,7 +478,7 @@ def test_submit_single_xrsl(ce: FakeARex, client: Client) -> None:
 
 
 def test_xrsl_value_forms() -> None:
-    fields = arex._xrsl_fields("&(jobname='it''s')(stdout=bare)(stderr=\"a\"\"b\")")
+    fields = _descriptions._xrsl_fields("&(jobname='it''s')(stdout=bare)(stderr=\"a\"\"b\")")
     assert (fields.name, fields.stdout, fields.stderr, fields.queue) == ("it's", "bare", 'a"b', "")
 
 
@@ -584,7 +581,7 @@ def test_rejections_and_policy(ce: FakeARex, client: Client) -> None:
 
 def test_job_ids_never_collide(ce: FakeARex, monkeypatch: pytest.MonkeyPatch) -> None:
     values = iter(["aaaaaaaaaaaa", "aaaaaaaaaaaa", "bbbbbbbbbbbb"])
-    monkeypatch.setattr(arex.secrets, "token_hex", lambda size: next(values))
+    monkeypatch.setattr(secrets, "token_hex", lambda size: next(values))
     assert ce.add_job(ALICE).id == "aaaaaaaaaaaa"
     assert ce.add_job(ALICE).id == "bbbbbbbbbbbb"
 
@@ -911,8 +908,9 @@ def test_propfind(ce: FakeARex, client: Client) -> None:
         headers = {"Depth": depth} if depth is not None else {}
         reply = client.request("PROPFIND", path, headers=headers, accept=None)
         assert (reply.status, reply.headers["content-type"]) == (200, "application/xml")
-        assert reply.body.startswith(b'<?xml version="1.0"?>\n<d:multistatus xmlns:d="DAV:">')
-        return ET.fromstring(reply.body).findall(f"{dav}response")
+        document = safexml.fromstring(reply.body)
+        assert document.tag == f"{dav}multistatus"
+        return document.findall(f"{dav}response")
 
     (root,) = propfind(base, "0")
     assert root.findtext(f"{dav}href") == prefix + "/"
@@ -922,6 +920,7 @@ def test_propfind(ce: FakeARex, client: Client) -> None:
     hrefs = [entry.findtext(f"{dav}href") for entry in propfind(base + "/", "1")]
     assert hrefs == [prefix + "/", prefix + "/fifo", prefix + "/out.txt", prefix + "/sub/"]
     fifo = propfind(base + "/fifo", "0")[0]
+    # A whole status line (RFC 4918 section 14.28), reason phrase included.
     assert fifo.findtext(f"{dav}status") == "HTTP/1.1 404 Not Found"
     everything = propfind(base, "infinity")
     assert everything[-1].findtext(f"{dav}href") == prefix + "/sub/inner"
@@ -946,7 +945,7 @@ def test_diagnose(ce: FakeARex, client: Client, bob: Client) -> None:
     assert f"subject={ALICE}\n".encode() in client.request("GET", f"{base}/local").body
     xml = client.request("GET", f"{base}/xml")
     assert xml.headers["content-type"] == "application/xml"
-    assert ET.fromstring(xml.body).tag == f"{{{GLUE2_NS}}}ComputingActivity"
+    assert safexml.fromstring(xml.body).tag == f"{{{GLUE2_NS}}}ComputingActivity"
     for name in ("failed", "diag", "comment", "input_status"):
         absent = client.request("GET", f"{base}/{name}")
         assert (absent.status, absent.reason) == (404, "Not found")
@@ -998,9 +997,7 @@ def test_x509_delegation(ce: FakeARex, client: Client, pki: PKI) -> None:
 def test_delegation_signed_with_a_real_proxy(ce: FakeARex, client: Client, pki: PKI) -> None:
     delegation_id, csr = _delegate(client, version="1.0")
     proxy = pki.credential()
-    der = sign_request(x509.load_pem_x509_csr(csr).public_bytes(serialization.Encoding.DER), proxy)
-    pem = x509.load_der_x509_certificate(der).public_bytes(serialization.Encoding.PEM)
-    body = pem + b"".join(link.pem() for link in proxy.chain)
+    body = sign_request(csr, proxy).encode()
     assert client.request("PUT", f"delegations/{delegation_id}", body).status == 200
     assert len(ce.delegations[delegation_id].chain) == len(proxy.chain) + 1
 
@@ -1139,7 +1136,7 @@ def test_denied_operations(
     assert (reply.status, reply.reason) == (403, "Operation is not allowed")
     assert reply.headers["content-type"] == "text/plain"
     assert reply.body == f"{operation} operation is not allowed for this user".encode()
-    assert set(arex.OPERATIONS) >= ce.denied
+    assert set(OPERATIONS) >= ce.denied
 
 
 # ---------------------------------------------------------------------------
@@ -1173,7 +1170,7 @@ def test_faults(ce: FakeARex, client: Client) -> None:
 
 def test_dropped_connection_then_retry(ce: FakeARex, client: Client) -> None:
     ce.fault("POST", "action=status", drop=True)
-    with pytest.raises((http.client.RemoteDisconnected, ConnectionError)):
+    with pytest.raises((RemoteDisconnected, ConnectionError)):
         client.action("status", "x")
     client.connection.close()
     assert client.action("status", "x").status == 201
@@ -1250,19 +1247,19 @@ def test_stop_hangs_up_on_open_connections(tmp_path: Path) -> None:
 
 
 def test_rendering_rules() -> None:
-    node = arex._Node("root")
-    assert arex._render_json(node, (), True) == ""
-    assert arex._render_json(node, ("a",), True) == '{"a":[]}'
-    assert arex._render_json(node, ("a",), False) == "{}"
+    node = _render._Node("root")
+    assert _render._render_json(node, (), True) == ""
+    assert _render._render_json(node, ("a",), True) == '{"a":[]}'
+    assert _render._render_json(node, ("a",), False) == "{}"
     leaf = node.add("leaf", "v", {"dropped": "1"})
     node.add("leaf", "w")
-    assert arex._render_json(node, (), True) == '{"leaf":["v","w"]}'
-    assert arex._render_json(leaf, (), True) == '"v"'
-    assert arex._render_xml(node) == '<root><leaf dropped="1">v</leaf><leaf>w</leaf></root>'
+    assert _render._render_json(node, (), True) == '{"leaf":["v","w"]}'
+    assert _render._render_json(leaf, (), True) == '"v"'
+    assert _render._render_xml(node) == '<root><leaf dropped="1">v</leaf><leaf>w</leaf></root>'
     assert (
-        arex._render_html(arex._Node("x", "<y>"))
+        _render._render_html(_render._Node("x", "<y>"))
         == "<HTML><HEAD>x</HEAD><BODY>&lt;y&gt;</BODY></HTML>"
     )
-    assert arex._merge([(5, 7), (0, 2), (1, 4)]) == [(0, 4), (5, 7)]
-    assert arex._content_range("bytes 3-4/*", 2) == (3, 5)
-    assert arex._top_level_groups('(a "(" b)(c)') == ['a "(" b', "c"]
+    assert _wire._merge([(5, 7), (0, 2), (1, 4)]) == [(0, 4), (5, 7)]
+    assert _wire._content_range("bytes 3-4/*", 2) == (3, 5)
+    assert _descriptions._top_level_groups('(a "(" b)(c)') == ['a "(" b', "c"]

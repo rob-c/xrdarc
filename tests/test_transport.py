@@ -5,18 +5,23 @@ from __future__ import annotations
 import errno
 import io
 import socket
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from urllib3.exceptions import ProtocolError
-from urllib3.response import HTTPResponse
-from xgfalclient.testing.pki import PKI
+from xrdhttp import session as shared
+from xrdhttp.connection import HTTPResponse
+from xrdhttp.wire import DirectReader
+from xrdsec.testing.pki import PKI
 
-from _arex import RETRIES, add_job, make_credentials, make_session
+from _arex import RETRIES, add_job, make_session
 from xrdarc.creds import Credentials
 from xrdarc.errors import ARCError, HTTPError, NotAllowedError
-from xrdarc.testing.arex import FakeARex
-from xrdarc.transport import USER_AGENT, Response, Session
+from xrdarc.testing.arex import FakeARex, Fault
+from xrdarc.testing.fixtures import make_credentials
+from xrdarc.transport import BACKOFF_CAP, USER_AGENT, Response, Session
 
 pytest_plugins = ["_arex"]
 
@@ -39,13 +44,23 @@ def _free_port() -> int:
     return port
 
 
-def _broken_stream(error: BaseException) -> object:
-    def stream(self: HTTPResponse, amt: int | None = 2**16, decode_content: bool | None = None):
-        # One real chunk, then the connection "goes away".
-        yield self.read(1)
-        raise error
+def _broken_reads(error: BaseException) -> Callable[..., int]:
+    """A ``readinto`` that delivers one byte, then fails with ``error``."""
+    calls = [0]
 
-    return stream
+    def readinto(self: object, buffer: bytearray) -> int:
+        calls[0] += 1
+        if calls[0] > 1:
+            raise error
+        buffer[0:1] = b"h"
+        return 1
+
+    return readinto
+
+
+def _reset(self: object, *args: object, **kwargs: object) -> bytes:
+    """A read on a connection the CE reset."""
+    raise ConnectionResetError("connection reset")
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +137,7 @@ def test_error_bodies_are_truncated(ce: FakeARex, session: Session) -> None:
 def test_a_read_failure_is_a_lost_connection(
     ce: FakeARex, session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def read(self: HTTPResponse, *args: object, **kwargs: object) -> bytes:
-        raise ProtocolError("connection reset")
-
-    monkeypatch.setattr(HTTPResponse, "read", read)
+    monkeypatch.setattr(HTTPResponse, "read", _reset)
     with pytest.raises(ARCError, match="Connection lost reading the response") as caught:
         session.request("GET", _versions_url(ce))
     assert caught.value.errno == errno.ECONNABORTED
@@ -145,13 +157,40 @@ def test_dropped_get_is_retried_with_backoff(
     assert sleeps == [0.5, 1.0]
 
 
-@pytest.mark.parametrize("status", [502, 503, 504])
+@pytest.mark.parametrize("status", [429, 502, 503, 504])
 def test_gateway_errors_are_retried(
     ce: FakeARex, session: Session, sleeps: list[float], status: int
 ) -> None:
     ce.fault("GET", status=status)
     assert session.request("GET", _versions_url(ce)).status == 200
     assert sleeps == [0.5]
+
+
+def test_backoff_is_jittered_below_its_ceiling(ce: FakeARex, credentials: Credentials) -> None:
+    """Without a pinned source the pauses are drawn from [0, ceiling]: clients do not stampede."""
+    sleeps: list[float] = []
+    ce.fault("GET", status=503, times=2)
+    with make_session(credentials, sleeps=sleeps, backoff=0.5) as session:
+        session.request("GET", _versions_url(ce))
+    assert len(sleeps) == 2
+    assert 0 <= sleeps[0] <= 0.5 and 0 <= sleeps[1] <= 1.0
+
+
+@pytest.mark.parametrize(("header", "expected"), [("7", 7.0), ("3600", BACKOFF_CAP)])
+def test_retry_after_is_honoured_up_to_the_cap(
+    ce: FakeARex, session: Session, sleeps: list[float], header: str, expected: float
+) -> None:
+    ce.fault("GET", status=503, headers={"Retry-After": header})
+    assert session.request("GET", _versions_url(ce)).status == 200
+    assert sleeps == [expected]
+
+
+def test_retry_after_of_zero_does_not_sleep(
+    ce: FakeARex, session: Session, sleeps: list[float]
+) -> None:
+    ce.fault("GET", status=429, headers={"Retry-After": "0"})
+    assert session.request("GET", _versions_url(ce)).status == 200
+    assert sleeps == []
 
 
 @pytest.mark.parametrize("method", ["HEAD", "PUT", "DELETE", "PROPFIND", "OPTIONS"])
@@ -162,8 +201,9 @@ def test_every_idempotent_method_is_retried(ce: FakeARex, session: Session, meth
     assert [r.method for r in ce.requests] == [method, method]
 
 
-def test_backoff_doubles_from_the_configured_base(ce: FakeARex, credentials: Credentials) -> None:
-    sleeps: list[float] = []
+def test_backoff_doubles_from_the_configured_base(
+    ce: FakeARex, credentials: Credentials, sleeps: list[float]
+) -> None:
     session = make_session(credentials, sleeps=sleeps, retries=3, backoff=0.1)
     ce.fault("GET", status=503, times=3)
     with session:
@@ -241,6 +281,17 @@ def test_retried_bytes_body_is_sent_again(ce: FakeARex, session: Session) -> Non
     assert [r.body for r in ce.requests] == [b"payload", b"payload"]
 
 
+def test_retried_stream_body_is_sent_again_from_where_it_stood(
+    ce: FakeARex, session: Session
+) -> None:
+    url = _file_url(ce, "data.txt")
+    stream = io.BytesIO(b"--payload")
+    stream.seek(2)
+    ce.fault("PUT", status=503)
+    session.request("PUT", url, body=stream, expect=(200, 201))
+    assert [r.body for r in ce.requests] == [b"payload", b"payload"]
+
+
 # ---------------------------------------------------------------------------
 # TLS and the session's life
 # ---------------------------------------------------------------------------
@@ -262,12 +313,12 @@ def test_untrusted_server_is_a_tls_failure(
     assert ce.requests == []
 
 
-@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
 def test_verification_can_be_turned_off(ce: FakeARex, pki: PKI, tmp_path: Path) -> None:
     empty = tmp_path / "no-cas"
     empty.mkdir()
     credentials = make_credentials(pki, ca_dir=str(empty), verify=False)
-    with make_session(credentials) as session:
+    # Every unverified connection warns: the user is told, not silenced.
+    with make_session(credentials) as session, pytest.warns(shared.UnverifiedTLSWarning):
         assert session.request("GET", _versions_url(ce)).status == 200
 
 
@@ -385,7 +436,7 @@ def test_download_cut_off_mid_stream_cleans_up(
 ) -> None:
     target = dest / "out.txt"
     target.write_bytes(b"previous")
-    monkeypatch.setattr(HTTPResponse, "stream", _broken_stream(ProtocolError("reset")))
+    monkeypatch.setattr(DirectReader, "readinto", _broken_reads(ConnectionResetError("reset")))
     with pytest.raises(ARCError, match="Connection lost downloading") as caught:
         session.download(output_url, target)
     assert caught.value.errno == errno.ECONNABORTED
@@ -397,11 +448,51 @@ def test_download_cut_off_mid_stream_cleans_up(
 def test_download_local_failure_cleans_up(
     output_url: str, session: Session, dest: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(HTTPResponse, "stream", _broken_stream(OSError(errno.ENOSPC, "full")))
+    # Not the CE's failure: an error the session did not raise passes through as it is.
+    monkeypatch.setattr(shared.Response, "readinto", _broken_reads(OSError(errno.ENOSPC, "full")))
     with pytest.raises(OSError) as caught:
         session.download(output_url, dest / "out.txt")
     assert caught.value.errno == errno.ENOSPC
     assert list(dest.iterdir()) == []
+
+
+def test_download_cancelled_between_chunks(
+    output_url: str, session: Session, dest: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook that fires mid-body stops the download, leaving nothing behind."""
+    stop = threading.Event()
+
+    def readinto(self: object, buffer: bytearray) -> int:
+        stop.set()
+        buffer[0:1] = b"h"
+        return 1
+
+    monkeypatch.setattr(shared.Response, "readinto", readinto)
+    with pytest.raises(ARCError, match="interrupted") as caught:
+        session.download(output_url, dest / "out.txt", cancel=stop)
+    assert caught.value.errno == errno.EINTR
+    assert caught.value.url is None  # the user's doing, not the CE's
+    assert list(dest.iterdir()) == []
+
+
+def test_download_cancel_wakes_a_stalled_read(ce: FakeARex, session: Session, dest: Path) -> None:
+    """The watcher shuts the connection down, so a CE that stops sending cannot hold up Ctrl-C."""
+    url = _file_url(ce, "big", {"big": b"x" * 4096})
+    ce.faults.append(Fault("GET", r"/session/big", status=None, stall=30.0))
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    started = time.monotonic()
+    with pytest.raises(ARCError, match="interrupted") as caught:
+        session.download(url, dest / "big", cancel=stop.is_set)
+    assert time.monotonic() - started < 10
+    assert caught.value.errno == errno.EINTR
+    assert list(dest.iterdir()) == []
+
+
+def test_download_completes_when_the_hook_never_fires(
+    output_url: str, session: Session, dest: Path
+) -> None:
+    assert session.download(output_url, dest / "out.txt", cancel=lambda: False) == 1200
 
 
 def test_copy_to_writes_the_body(output_url: str, session: Session) -> None:
@@ -413,12 +504,11 @@ def test_copy_to_writes_the_body(output_url: str, session: Session) -> None:
 def test_copy_to_reports_a_lost_connection(
     output_url: str, session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def read(self: HTTPResponse, *args: object, **kwargs: object) -> bytes:
-        raise ProtocolError("reset")
-
-    monkeypatch.setattr(HTTPResponse, "read", read)
-    with pytest.raises(ARCError, match="Connection lost") as caught:
-        session.copy_to(output_url, io.BytesIO())
+    monkeypatch.setattr(DirectReader, "readinto", _broken_reads(ConnectionResetError("reset")))
+    out = io.BytesIO()
+    with pytest.raises(ARCError, match="Connection lost downloading") as caught:
+        session.copy_to(output_url, out)
+    assert out.getvalue() == b"h"  # what reached the stream stays there
     assert caught.value.errno == errno.ECONNABORTED
 
 
@@ -430,11 +520,8 @@ def test_copy_to_error_status(ce: FakeARex, session: Session) -> None:
 def test_error_body_lost_mid_read_still_reports_the_status(
     ce: FakeARex, session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def read(self: HTTPResponse, *args: object, **kwargs: object) -> bytes:
-        raise ProtocolError("reset")
-
     ce.fault("GET", status=404, reason="Gone", body=b"lost")
-    monkeypatch.setattr(HTTPResponse, "read", read)
+    monkeypatch.setattr(HTTPResponse, "read", _reset)
     with pytest.raises(HTTPError) as caught:
         session.request("GET", _versions_url(ce))
     assert (caught.value.status, caught.value.reason, caught.value.body) == (404, "Gone", "")

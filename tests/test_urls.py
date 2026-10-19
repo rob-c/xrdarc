@@ -122,8 +122,9 @@ def test_parse_job_url_rejects_non_job_urls(given: str) -> None:
     assert caught.value.errno == errno.EINVAL
 
 
-def test_job_url_is_frozen_and_hashable() -> None:
+@pytest.mark.parametrize("attribute", ["ce", "id"])
+def test_job_url_is_frozen_and_hashable(attribute: str) -> None:
     parsed = JobURL(CE, "abc")
     assert {parsed, JobURL(CE, "abc")} == {parsed}
     with pytest.raises(AttributeError):
-        parsed.id = "other"  # type: ignore[misc]
+        setattr(parsed, attribute, "other")

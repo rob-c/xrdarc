@@ -151,7 +151,9 @@ def test_explicit_file_missing_is_enoent(tmp_path: Path) -> None:
     assert str(caught.value) == f"Configuration file {missing} does not exist"
 
 
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads anything")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="running as root, which can read any file"
+)
 def test_explicit_file_unreadable_is_eacces(tmp_path: Path) -> None:
     locked = _write(tmp_path / "locked.conf", "timeout = 1\n")
     locked.chmod(0)

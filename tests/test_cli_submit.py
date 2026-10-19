@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -102,16 +101,16 @@ def test_sub_dry_run_json(xrdarc_json: RunJSON, tmp_path: Path, chdir: Path) -> 
 
 def test_sub_needs_a_description(xrdarc: Run, tmp_path: Path) -> None:
     code, _, err = xrdarc("sub", "-C", "ce.example")
-    assert code == errno.EINVAL
+    assert code == 2
     assert "No job description given" in err
     code, _, err = xrdarc("sub", "-C", "ce.example", str(tmp_path / "missing.xrsl"))
-    assert code == errno.ENOENT
+    assert code == 6
     assert "Cannot read" in err
 
 
 def test_sub_needs_a_ce(xrdarc: Run, ce: FakeARex, tmp_path: Path) -> None:
     code, _, err = xrdarc("sub", "-e", XRSL)
-    assert code == errno.EINVAL
+    assert code == 2
     assert "No computing element given; use -C" in err
     conf = tmp_path / "client.conf"
     conf.write_text(
@@ -176,7 +175,7 @@ def test_info_failure_and_defaults(
     xrdarc: Run, ce: FakeARex, make_ce: Callable[..., FakeARex], tmp_path: Path
 ) -> None:
     code, _, err = xrdarc("info")
-    assert code == errno.EINVAL
+    assert code == 2
     assert "No computing element given; name one" in err
     broken = make_ce()
     broken.fault("GET", r"/info", status=403, reason="Not for you")

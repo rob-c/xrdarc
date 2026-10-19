@@ -12,6 +12,8 @@ from __future__ import annotations
 import errno as _errno
 import functools
 
+from xrdcore import errors as _core
+
 __all__ = [
     "ARCError",
     "CredentialError",
@@ -19,6 +21,7 @@ __all__ = [
     "HTTPError",
     "JobNotFoundError",
     "NotAllowedError",
+    "credential_error",
     "errno_for_status",
 ]
 
@@ -59,17 +62,60 @@ class ARCError(OSError):
         self.user_message = message
 
     def __str__(self) -> str:
+        """The sentence, with the URL in brackets when there is one."""
         return self.user_message if self.url is None else f"{self.user_message} ({self.url})"
 
     def __reduce__(self) -> tuple[object, ...]:
+        """Pickle through ``__init__`` (``OSError``'s default would lose ``url``)."""
         return (type(self), (self.user_message, self.code), {"url": self.url})
 
 
-class CredentialError(ARCError):
-    """No usable X.509 proxy, certificate or token, or one that cannot be loaded."""
+class CredentialError(ARCError, _core.CredentialError):
+    """No usable X.509 proxy, certificate or token, or one that cannot be loaded.
+
+    It is also an :class:`xrdcore.errors.CredentialError`, as the libraries'
+    design asks of a client ("clients join it by multiple inheritance"): code
+    written against the libraries - ``except xrdcore.errors.CredentialError``
+    - catches xrdarc's too. The other direction is :func:`credential_error`,
+    which turns what xrdsec raises into this class at xrdarc's boundary, so
+    an xrdarc caller keeps its ``OSError``/``errno`` contract.
+    """
 
     def __init__(self, message: str, code: int = _errno.EACCES, *, url: str | None = None) -> None:
         super().__init__(message, code, url=url)
+
+
+def credential_error(exc: BaseException, context: str = "") -> CredentialError:
+    """``exc`` - an error from xrdsec or from reading a credential - as a :class:`CredentialError`.
+
+    xrdsec raises :class:`xrdcore.errors.CredentialError` (and its
+    ``InsecureCredentialError``), :class:`FileNotFoundError`, plain
+    ``OSError``\\ s from OpenSSL, and ``ValueError`` for a request or
+    certificate it refuses; none of them is an ``ARCError``, so none would
+    get xrdarc's exit code or report ``code``. The errno is the file's own
+    when there is one (``ENOENT`` for a missing proxy), else ``EACCES``:
+    every credential failure means "you cannot authenticate like this".
+    An xrdarc ``CredentialError`` (a pass-phrase prompt's refusal) is
+    returned unchanged. ``context`` is put in front of the message
+    ("Cannot use the proxy /tmp/x509up_u1000: ...").
+    """
+    if isinstance(exc, CredentialError):
+        return exc
+    code, text = _os_detail(exc) if isinstance(exc, OSError) else (_errno.EACCES, str(exc))
+    return CredentialError(f"{context}: {text}" if context else text, code)
+
+
+def _os_detail(exc: OSError) -> tuple[int, str]:
+    """An ``OSError``'s errno (``EACCES`` if it has none) and its message, naming the file.
+
+    ``FileNotFoundError(2, "No such file or directory", path)`` reads
+    ``No such file or directory: path``; an OpenSSL error with no
+    ``strerror`` keeps its own text.
+    """
+    text = exc.strerror or str(exc)
+    if exc.filename and str(exc.filename) not in text:
+        text = f"{text}: {exc.filename}"
+    return exc.errno or _errno.EACCES, text
 
 
 class DescriptionError(ARCError, ValueError):

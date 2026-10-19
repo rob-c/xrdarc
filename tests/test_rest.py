@@ -10,14 +10,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
-from xgfalclient.crypto.proxy import sign_request
-from xgfalclient.testing.pki import PKI
+from xrdsec.testing.pki import PKI
 
 from _arex import USER_DN, add_job
 from xrdarc import rest as rest_module
 from xrdarc.errors import ARCError, HTTPError
+from xrdarc.proxy import sign_request
 from xrdarc.rest import BulkResult, Listing, RESTClient, SubmitResult, as_list
 from xrdarc.testing.arex import FakeARex
 from xrdarc.transport import Session
@@ -42,11 +40,8 @@ def _client(ce: FakeARex, session: Session, version: str | None = None) -> RESTC
 
 
 def _sign(csr: str, pki: PKI) -> str:
-    proxy = pki.credential()
-    request = x509.load_pem_x509_csr(csr.encode()).public_bytes(serialization.Encoding.DER)
-    certificate = x509.load_der_x509_certificate(sign_request(request, proxy))
-    pem = certificate.public_bytes(serialization.Encoding.PEM)
-    return (pem + b"".join(link.pem() for link in proxy.chain)).decode()
+    """The chain a client would upload for ``csr``: a proxy of the PKI's proxy, then its chain."""
+    return sign_request(csr, pki.credential())
 
 
 # ---------------------------------------------------------------------------
