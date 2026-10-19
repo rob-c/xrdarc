@@ -2,7 +2,7 @@
 
 All notable changes to xrdarc are recorded here.
 
-## [Unreleased]
+## [0.4.1] - Unreleased
 
 Fixes from running 0.4.0 in production against a WLCG site's ARC 7 CE.
 
