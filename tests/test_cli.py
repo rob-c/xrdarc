@@ -126,6 +126,11 @@ def _parse(*argv: str) -> argparse.Namespace:
 def test_log_levels(argv: tuple[str, ...], level: int) -> None:
     _common.configure(_parse("stat", *argv))
     assert logging.getLogger("xrdarc").level == level
+    # The libraries' loggers follow: ``-d DEBUG`` shows xrdhttp's retries and
+    # redirects and xrdsec's credential search, not only xrdarc's own lines.
+    assert {name: logging.getLogger(name).level for name in _common.LOGGERS} == dict.fromkeys(
+        ("xrdarc", "xrdcore", "xrdhttp", "xrdsec"), level
+    )
 
 
 def test_log_handler_is_added_once_and_follows_stderr(

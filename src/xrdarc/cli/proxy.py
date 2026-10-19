@@ -83,14 +83,17 @@ def _print_info(command: Command, info: ProxyInfo) -> None:
         voms=[
             {
                 "vo": entry.vo,
-                "fqans": list(entry.fqans),
+                "subject": str(entry.holder),
+                "issuer": str(entry.issuer),
+                "fqans": [_fqan(fqan) for fqan in entry.fqans],
                 "uri": entry.uri,
                 "time_left": int(max(0.0, entry.not_after - now)),
             }
             for entry in info.voms
         ],
     )
-    # ``arcproxy -I``'s labels, so a script that greps them keeps working.
+    # ``arcproxy -I``'s labels, in its order, so a script that greps them
+    # keeps working (checked against arcproxy 7.1.1).
     lines = [
         f"Subject: {info.subject}",
         f"Issuer: {info.issuer}",
@@ -103,10 +106,24 @@ def _print_info(command: Command, info: ProxyInfo) -> None:
     for entry in info.voms:
         lines.append(f"====== AC extension information for VO {entry.vo} ======")
         lines.append(f"VO        : {entry.vo}")
-        lines.extend(f"attribute : {fqan}" for fqan in entry.fqans)
-        lines.append(f"Time left for AC: {_duration(int(entry.not_after - now))}")
+        lines.append(f"subject   : {entry.holder}")
+        lines.append(f"issuer    : {entry.issuer}")
         lines.append(f"uri       : {entry.uri}")
+        lines.extend(f"attribute : {_fqan(fqan)}" for fqan in entry.fqans)
+        lines.append(f"Time left for AC: {_duration(int(entry.not_after - now))}")
     command.say("\n".join(lines))
+
+
+def _fqan(fqan: str) -> str:
+    """An FQAN as ``arcproxy`` shows it: without a ``Role`` or ``Capability`` of ``NULL``.
+
+    VOMS encodes every FQAN in full (``/lhcb/Role=NULL/Capability=NULL``),
+    which is what ``voms-proxy-info`` prints and what the AC holds; ARC
+    strips the empty parts, so ``-I`` says ``/lhcb``, and ``/lhcb/Role=pilot``
+    for a role. The same form is what ``-S vo:fqan`` takes.
+    """
+    kept = [part for part in fqan.split("/") if part not in ("Role=NULL", "Capability=NULL")]
+    return "/".join(kept)
 
 
 def _iso(stamp: float) -> str:
@@ -115,14 +132,16 @@ def _iso(stamp: float) -> str:
 
 
 def _duration(seconds: int) -> str:
-    """``arcproxy``'s ``N days H hours M minutes S seconds``, or ``expired``."""
+    """``arcproxy``'s ``H hours M minutes S seconds`` (hours past 24 and all), or ``expired``.
+
+    ARC 7's ``arcproxy -I`` never says "days": a week-long proxy has
+    ``167 hours`` left, and a script that parses the line can rely on it.
+    """
     if seconds <= 0:
         return "expired"
-    days, rest = divmod(seconds, 86400)
-    hours, rest = divmod(rest, 3600)
+    hours, rest = divmod(seconds, 3600)
     minutes, secs = divmod(rest, 60)
-    text = f"{hours} hours {minutes} minutes {secs} seconds"
-    return f"{days} days {text}" if days else text
+    return f"{hours} hours {minutes} minutes {secs} seconds"
 
 
 def _user_credential(command: Command) -> Signer:

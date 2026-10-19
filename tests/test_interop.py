@@ -27,12 +27,15 @@ import xrdarc
 from xrdarc import ARCClient, Job, JobState
 from xrdarc.creds import discover
 
-pytestmark = pytest.mark.interop
-
 CE = os.environ.get("XRDARC_INTEROP_CE", "")
 QUEUE = os.environ.get("XRDARC_INTEROP_QUEUE") or None
 RTE = os.environ.get("XRDARC_INTEROP_RTE") or None
 TIMEOUT = float(os.environ.get("XRDARC_INTEROP_TIMEOUT", "1800"))
+
+# The suite's per-test limit (``timeout = 120`` in pyproject.toml, for the
+# hermetic tests) would cut a real job's wait short on any busy production
+# CE; these tests wait ``TIMEOUT`` for a job and a little more for the rest.
+pytestmark = [pytest.mark.interop, pytest.mark.timeout(TIMEOUT + 300)]
 
 
 @pytest.fixture(scope="module")

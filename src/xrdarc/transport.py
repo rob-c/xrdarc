@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from xrdcore import cancel as _cancel
+from xrdcore.log import get_logger, redact
 from xrdhttp import session as _http
 
 from ._version import __version__
@@ -129,6 +130,8 @@ class _ARCErrors(_http.Errors):
 #: TLS failures that are the connection closing, not the handshake refusing.
 _TLS_DROPS = (ssl.SSLEOFError, ssl.SSLZeroReturnError)
 _ERRORS = _ARCErrors()
+
+_log = get_logger("xrdarc")
 
 
 def _never(method: str, length: int | None) -> bool:
@@ -266,16 +269,44 @@ class Session:
         payload = body if body is None or isinstance(body, bytes) else _file_body(body)
         # ``extra`` headers last, so an endpoint's own Content-Type or Accept
         # wins; nothing an endpoint passes ever carries ``Authorization``.
-        return self._transport().request(
+        return self._send(
             method,
             url,
             body=payload,
             headers=headers,
-            auth=_http.Auth(headers=self.credentials.headers()),
             expect=frozenset(expect),
+            idempotent=idempotent,
+        )
+
+    def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        body: bytes | _http.FileBody | None,
+        headers: Mapping[str, str] | None,
+        expect: frozenset[int],
+        idempotent: bool | None = None,
+    ) -> _http.Response:
+        """Every request to a CE goes out through here, logged at DEBUG (``-d DEBUG``).
+
+        One line before it is sent, so a request the CE never answers is the
+        last thing in the log, and one with the status when the CE answers.
+        The URL is redacted the way the chain redacts every log line.
+        """
+        _log.debug("%s %s", method, redact(url))
+        response = self._transport().request(
+            method,
+            url,
+            body=body,
+            headers=headers,
+            auth=_http.Auth(headers=self.credentials.headers()),
+            expect=expect,
             idempotent=idempotent,
             follow=False,
         )
+        _log.debug("%s %s: %d %s", method, redact(url), response.status, response.reason)
+        return response
 
     def request(
         self,
@@ -307,15 +338,7 @@ class Session:
             # ``Content-Length``, an empty file's as 0.
             body = _http.FileBody(handle, 0, size, slice=_CHUNK)
             headers = {"Content-Type": "application/octet-stream"}
-            self._transport().request(
-                "PUT",
-                url,
-                body=body,
-                headers=headers,
-                auth=_http.Auth(headers=self.credentials.headers()),
-                expect=frozenset(expect),
-                follow=False,
-            ).close()
+            self._send("PUT", url, body=body, headers=headers, expect=frozenset(expect)).close()
         return size
 
     def download(self, url: str, target: Path, *, cancel: _cancel.Cancel | None = None) -> int:

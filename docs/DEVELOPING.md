@@ -147,7 +147,7 @@ $ xrdarc cat -l JOB               # A-REX's log of the job (stage-in, LRMS submi
 $ xrdarc diagnose JOB             # every control file: failed, errors, diag, local, description ...
 $ xrdarc ls JOB                   # what is in the session directory now
 $ xrdarc cat -f some/file JOB     # any file, also while the job runs
-$ xrdarc -d DEBUG stat JOB        # every HTTP request
+$ xrdarc stat -d DEBUG JOB        # every HTTP request, with its status
 $ xrdarc stat --json JOB          # everything, machine-readable
 ```
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import io
+import logging
 import socket
 import threading
 import time
@@ -76,6 +77,38 @@ def test_request_reads_the_whole_answer(ce: FakeARex, session: Session) -> None:
     assert response.url == _versions_url(ce)
     assert ce.requests[-1].header("User-Agent") == USER_AGENT
     assert ce.requests[-1].header("Accept") == "application/json"
+
+
+def test_every_request_is_logged_at_debug_with_its_status(
+    ce: FakeARex, session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``-d DEBUG`` shows each request as it goes out, and again with the CE's answer."""
+    url = _versions_url(ce)
+    with caplog.at_level(logging.DEBUG, "xrdarc"):
+        session.request("GET", url, headers=JSON)
+    assert [r.getMessage() for r in caplog.records] == [f"GET {url}", f"GET {url}: 200 OK"]
+
+
+def test_uploads_are_logged_too(
+    ce: FakeARex, session: Session, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    source = tmp_path / "input.dat"
+    source.write_bytes(b"x")
+    url = _file_url(ce, "input.dat")
+    with caplog.at_level(logging.DEBUG, "xrdarc"):
+        session.upload(url, source)
+    assert [r.getMessage() for r in caplog.records] == [f"PUT {url}", f"PUT {url}: 200 OK"]
+
+
+def test_a_failed_request_is_logged_going_out_but_has_no_status_line(
+    ce: FakeARex, session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    ce.fault("GET", status=503, reason="Busy", times=RETRIES + 1)
+    url = _versions_url(ce)
+    with caplog.at_level(logging.DEBUG, "xrdarc"), pytest.raises(HTTPError):
+        session.request("GET", url)
+    messages = [r.getMessage() for r in caplog.records if r.name == "xrdarc"]
+    assert messages == [f"GET {url}"]
 
 
 def test_response_text_replaces_undecodable_bytes() -> None:

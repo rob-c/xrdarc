@@ -112,7 +112,9 @@ URL is the CE's; without one it is local. 0, 1, 2, 70, 130 and 141 are
 turns Ctrl-C into 130 and a closed pipe into a quiet 141; everything else
 goes to `xrdcore.cli.Fatal`, which prints the one line, records the error
 and logs a bug's traceback at `-d DEBUG`. `-v`/`-d` logging is
-`xrdcore.log.configure` on the `xrdarc` logger.
+`xrdcore.log.configure` on the `xrdarc` logger and the libraries' (`xrdcore`,
+`xrdhttp`, `xrdsec`), so `-d DEBUG` shows every request the transport sends
+with its status, and xrdhttp's retries and redirects.
 
 ## Tests
 

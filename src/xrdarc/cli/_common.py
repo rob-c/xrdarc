@@ -158,6 +158,12 @@ def exit_code_for(exc: BaseException) -> ExitCode:
 #: Warnings given once per process (a literal ``--token``).
 _WARNED: set[str] = set()
 
+#: The loggers ``-d``/``-v`` set: xrdarc's own, and the libraries' it is built
+#: on. xrdhttp says when it retries or follows a redirect; at ``-d DEBUG`` a
+#: user sees that between the requests :mod:`xrdarc.transport` logs, much as
+#: ``arcsub -d DEBUG`` shows ARC's own HTTP traffic.
+LOGGERS = ("xrdarc", "xrdcore", "xrdhttp", "xrdsec")
+
 #: ``-d LEVEL`` as ARC spells the levels (``VERBOSE`` is ARC's step below INFO).
 _LEVELS = {
     "FATAL": logging.CRITICAL,
@@ -294,7 +300,7 @@ def _password() -> bytes:
 
 
 def _configure_logging(args: argparse.Namespace) -> None:
-    """Set the ``xrdarc`` logger's level from ``-d``/``-v``, with one stderr handler.
+    """Set the level of every logger in :data:`LOGGERS` from ``-d``/``-v``, with one stderr handler.
 
     :func:`xrdcore.log.configure` installs the handler (``LEVEL: message``,
     on whatever ``sys.stderr`` is at each record, redacted) and replaces its
@@ -304,7 +310,7 @@ def _configure_logging(args: argparse.Namespace) -> None:
     # ``-d`` beats ``-v``: an ARC level names exactly what is wanted. ``-v``
     # counts on xrdcore's scale: warnings, ``-v`` info, ``-vv`` debug.
     level = _LEVELS[args.debug] if args.debug else _xrdlog.verbosity_level(args.verbose)
-    _xrdlog.configure(level, loggers=["xrdarc"])
+    _xrdlog.configure(level, loggers=LOGGERS)
 
 
 @dataclass

@@ -2,6 +2,35 @@
 
 All notable changes to xrdarc are recorded here.
 
+## [Unreleased]
+
+Fixes from running 0.4.0 in production against a WLCG site's ARC 7 CE.
+
+### Fixed
+
+- `-d DEBUG` showed nothing of what went over the wire: only the `xrdarc`
+  logger was configured, and the HTTP layer logs nothing per request. The
+  transport now logs every request as it is sent and again with the CE's
+  status (`GET https://ce/arex/rest: 200 OK`), and `-d`/`-v` also set the
+  libraries' loggers (`xrdcore`, `xrdhttp`, `xrdsec`), so xrdhttp's retries
+  and redirects show too. `docs/DEVELOPING.md` spelt the option as a global
+  one (`xrdarc -d DEBUG stat`), which the parser rejects; it belongs to the
+  subcommand (`xrdarc stat -d DEBUG`).
+- `xrdarc proxy -I` now prints what `arcproxy -I` (7.1.1) prints for a
+  VOMS AC, in its order: the AC's `subject` (holder) and `issuer` lines,
+  then `uri`, then the attributes, with `Role=NULL` and `Capability=NULL`
+  stripped from each FQAN as ARC strips them (`/lhcb`, not
+  `/lhcb/Role=NULL/Capability=NULL`), and the time left last. The JSON/XML
+  report's `voms` entries gain `subject` and `issuer` and carry the FQANs in
+  the same form. "Time left" is counted in hours, as arcproxy counts it
+  (`167 hours`, never `6 days 23 hours`).
+- The interop suite (`pytest -m interop`) ran under the hermetic suite's
+  120-second per-test limit, so on a production CE whose queue takes
+  minutes to start a job, every test that waits for one failed with
+  pytest-timeout's `Timeout >120.0s` rather than waiting the
+  `XRDARC_INTEROP_TIMEOUT` (1800 s) it documents. Its tests now carry their
+  own limit of that long plus five minutes.
+
 ## [0.4.0] - 2026-10-19
 
 Released with the 0.4.0 storage clients and libraries. Reliability and

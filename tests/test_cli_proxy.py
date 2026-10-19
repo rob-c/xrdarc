@@ -270,12 +270,53 @@ def test_voms_attributes(proxy: Proxy, pki: PKI, voms: VOMS) -> None:
     assert (code, err) == (0, "")
     assert out.startswith("Contacting VOMS server for atlas\nContacting VOMS server for atlas\n")
     assert "====== AC extension information for VO atlas ======" in out
+    # arcproxy's lines, in arcproxy's order: the AC's holder (the issuer
+    # name of its ``baseCertificateID``: the user's CA here, the user for a
+    # VOMS server that binds the AC to the proxy) and issuer, then the
+    # server, the attributes and the time left.
+    block = out.split("====== AC extension information for VO atlas ======\n", 1)[1]
+    assert block.startswith(
+        "VO        : atlas\n"
+        "subject   : /DC=org/DC=xrdsec/CN=xrdsec Test CA\n"
+        "issuer    : /DC=org/DC=xrdsec/CN=host/localhost\n"
+        "uri       : 127.0.0.1:"
+    )
     assert "attribute : /atlas/Role=pilot\n" in out
-    assert "uri       : 127.0.0.1:" in out
-    assert "Time left for AC: 0 hours 59 minutes" in out
+    assert block.index("uri       : ") < block.index("attribute : ")
+    assert block.index("attribute : ") < block.index("Time left for AC: 0 hours 59 minutes")
     asked = [r.target for r in voms.server.requests]
     assert asked[0].startswith("/generate-ac?fqans=%2Fatlas%2FRole%3Dpilot&lifetime=3600")
     assert asked[1] == "/generate-ac?lifetime=3600"
+
+
+def test_null_role_and_capability_are_not_shown(
+    capsys: pytest.CaptureFixture[str], pki: PKI, voms: VOMS, restore_logging: None
+) -> None:
+    """The AC says ``/atlas/Role=NULL/Capability=NULL``; arcproxy (and ``-S``) say ``/atlas``."""
+    fqan = "/atlas/Role=NULL/Capability=NULL"
+    argv = ["proxy", *_user(pki), "-S", f"atlas:{fqan}", "--vomses", str(voms.vomses)]
+    code, doc = run_json(capsys, *argv)
+    assert code == 0
+    [record] = results(doc)
+    [entry] = record["voms"]
+    assert entry["fqans"] == ["/atlas"]
+    assert entry["subject"] == "/DC=org/DC=xrdsec/CN=xrdsec Test CA"
+    assert entry["issuer"] == "/DC=org/DC=xrdsec/CN=host/localhost"
+    code, out, _ = run(capsys, "proxy", "-I")
+    assert code == 0
+    assert "attribute : /atlas\n" in out
+    assert "NULL" not in out
+
+
+def test_time_left_is_counted_in_hours_as_arcproxy_counts_it(
+    capsys: pytest.CaptureFixture[str], pki: PKI, tmp_path: Path, restore_logging: None
+) -> None:
+    out_path = tmp_path / "long"
+    argv = ["proxy", "--proxy", str(out_path), *_user(pki), "--lifetime", "7d"]
+    code, out, _ = run(capsys, *argv)
+    assert code == 0
+    assert "Time left for proxy: 167 hours 59 minutes" in out
+    assert "days" not in out
 
 
 def test_voms_servers_are_reached_without_rfc5280_strict_mode(
