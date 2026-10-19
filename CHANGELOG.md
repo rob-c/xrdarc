@@ -140,7 +140,7 @@ What moved where (xrdarc keeps only what is ARC's):
   `chain.yml`: the duplicate and conformance gates over all seven
   repositories), with the libraries from its candidates action (now xrdhttp
   too); the build, twine, mkdocs and no-storage-client checks stay a job of
-  their own. `release.yml` runs xrd-devtools' `chain_preflight.py pypi`. CI
+  their own. `publish.yml` runs xrd-devtools' `chain_preflight.py pypi`. CI
   therefore needs `rob-c/xrd-devtools` to exist.
 - Release metadata is xrd-devtools' release gate:
   `tests/test_release_metadata.py` is `release_gate(__file__)` from
@@ -148,7 +148,7 @@ What moved where (xrdarc keeps only what is ARC's):
   hatch), a CHANGELOG led by exactly that version's well-formed section,
   project metadata and README that name this repository, and a release
   workflow built through the shared publish action.
-- `release.yml`'s build job is xrd-devtools' shared `publish`
+- `publish.yml`'s build job is xrd-devtools' shared `publish`
   composite action (build, `twine check --strict`, the artifact or
   pre-flight checks, a clean install whose tag, runtime version and dated
   changelog section agree, the artifact upload) and the suite run against the installed
@@ -260,7 +260,8 @@ What moved where (xrdarc keeps only what is ARC's):
   `xrdhttp>=0.4.0,<0.5` (without its `s3` extra, so no botocore) and
   `cryptography`; xrdclient, xgfalclient and urllib3 are no longer
   dependencies.
-- `.github/workflows/release.yml`: a `v*` tag builds the sdist and wheel,
+- `.github/workflows/publish.yml` (renamed from `release.yml`, the name
+  every package of the chain releases with): a `v*` tag builds the sdist and wheel,
   runs `twine check --strict` and xrdclient's `chain_preflight.py pypi`, so
   xrdcore, xrdsec and xrdhttp must already be on PyPI. It then installs the wheel
   from PyPI alone, runs the suite against it, attaches both files to a

@@ -1,14 +1,15 @@
 # Builds the sdist and wheel on a version tag, checks them against what is on
 # PyPI, attaches them to a GitHub release and uploads the same files to PyPI
 # with trusted publishing (owner rob-c, repository xrdarc, workflow
-# release.yml, environment pypi).
+# publish.yml, environment pypi). It was release.yml until 0.4.0; publish.yml
+# is the name every package of the chain releases with.
 #
 # xrdarc is built on xrdcore, xrdsec and xrdhttp, which must already be on PyPI: the
 # pre-flight refuses to release otherwise, and the release wheel is then
 # installed from PyPI alone, never from a checkout, and the suite run against
 # it. Release order and the whole chain's runbook: docs/releasing.md in
 # rob-c/xrdclient ("Releasing the 0.4.0 chain", step 5).
-name: Release
+name: Publish
 
 on:
   push:
