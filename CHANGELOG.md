@@ -259,7 +259,8 @@ What moved where (xrdarc keeps only what is ARC's):
 - Dependencies: `xrdcore>=0.4.0,<0.5`, `xrdsec>=0.4.0,<0.5`,
   `xrdhttp>=0.4.0,<0.5` (without its `s3` extra, so no botocore) and
   `cryptography`; xrdclient, xgfalclient and urllib3 are no longer
-  dependencies.
+  dependencies. The optional `testing` extra (pytest) is for the
+  `testing.fixtures` pytest plugin only.
 - `.github/workflows/publish.yml` (renamed from `release.yml`, the name
   every package of the chain releases with): a `v*` tag builds the sdist and wheel,
   runs `twine check --strict` and xrdclient's `chain_preflight.py pypi`, so

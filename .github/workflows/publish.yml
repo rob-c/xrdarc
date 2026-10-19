@@ -34,6 +34,9 @@ jobs:
         with:
           package: xrdarc
           preflight: true
+          # Every public module is imported from the installed wheel, and
+          # xrdarc.testing.fixtures is a pytest plugin.
+          extras: testing
           absent: xrdclient xgfalclient
           suite-requirements: pytest>=8 pytest-timeout pytest-xdist hypothesis>=6
 

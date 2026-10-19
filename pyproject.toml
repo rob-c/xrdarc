@@ -41,6 +41,9 @@ Issues = "https://github.com/rob-c/xrdarc/issues"
 Changelog = "https://github.com/rob-c/xrdarc/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# The pytest plugin xrdarc.testing.fixtures (shared with xrdwms's suite), which
+# a suite loads with pytest_plugins; nothing else of xrdarc needs pytest.
+testing = ["pytest>=8"]
 dev = [
   "build>=1,<2",
   "complexipy>=6,<7",
