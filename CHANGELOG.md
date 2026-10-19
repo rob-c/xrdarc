@@ -2,7 +2,7 @@
 
 All notable changes to xrdarc are recorded here.
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-10-19
 
 Released with the 0.4.0 storage clients and libraries. Reliability and
 safety fixes to the job lifecycle and the command line, and xrdarc is now
