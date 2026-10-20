@@ -28,9 +28,9 @@ classifiers = [
 # backoff, cancellation and log redaction; xrdhttp's session pools the HTTPS
 # connections and retries (without its ``s3`` extra: no botocore).
 dependencies = [
-  "xrdcore>=0.4.0,<0.5",
-  "xrdsec>=0.4.0,<0.5",
-  "xrdhttp>=0.4.0,<0.5",
+  "xrdcore>=0.4.1,<0.5",
+  "xrdsec>=0.4.1,<0.5",
+  "xrdhttp>=0.4.1,<0.5",
   "cryptography>=45",
 ]
 
