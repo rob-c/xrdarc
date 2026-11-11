@@ -6,6 +6,13 @@ All notable changes to xrdarc are recorded here.
 
 Fixes from running 0.4.0 in production against a WLCG site's ARC 7 CE.
 
+### Added
+
+- A mis-typed option or command is answered with the one that was meant
+  (`did you mean '-valid'?`), from xrdcore 0.4.1's `xrdcore.suggest`: the
+  parser every command here builds asks it, so nothing extra is configured and
+  the suggestion also appears in the `--json`/`--xml` error record.
+
 ### Fixed
 
 - `-d DEBUG` showed nothing of what went over the wire: only the `xrdarc`

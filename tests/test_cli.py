@@ -62,6 +62,32 @@ def test_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
     assert "unrecognized arguments" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["stat", "--timeoot", "5"], "'--timeout'"),
+        (["submitt"], "'sub'"),
+        (["stattt"], "'stat'"),
+    ],
+)
+def test_a_mis_typed_name_is_answered_with_the_one_meant(
+    capsys: pytest.CaptureFixture[str], argv: list[str], expected: str
+) -> None:
+    """xrdcore's parser offers the closest option or command that the tool does take."""
+    with pytest.raises(SystemExit) as caught:
+        cli.main(argv)
+    assert caught.value.code == 2
+    assert f"did you mean {expected}?" in capsys.readouterr().err
+
+
+def test_a_name_that_resembles_nothing_is_not_guessed_at(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["stat", "--no-such-option"])
+    assert "did you mean" not in capsys.readouterr().err
+
+
 def test_usage_error_as_json(capsys: pytest.CaptureFixture[str]) -> None:
     code, doc = run_json(capsys, "stat", "--no-such-option")
     assert code == 2
