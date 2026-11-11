@@ -4,6 +4,11 @@ All notable changes to xrdarc are recorded here.
 
 ## [0.4.1] - Unreleased
 
+### Tested
+
+- ARC submission is exercised on **macOS** (Apple Silicon) beside the Linux
+  CI, with X.509 authentication, against the same CE the tests fake.
+
 Fixes from running 0.4.0 in production against a WLCG site's ARC 7 CE.
 
 ### Added
