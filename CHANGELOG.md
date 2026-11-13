@@ -2,7 +2,7 @@
 
 All notable changes to xrdarc are recorded here.
 
-## [0.4.1] - Unreleased
+## [0.5.0] - 2026-11-12
 
 ### Tested
 
